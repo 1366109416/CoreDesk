@@ -1,0 +1,19 @@
+你正在实现 CoreDesk，一个以标准 C++20 为核心的跨平台文件索引与局域网传输客户端。
+
+仓库根目录 docs/COREDESK_SPEC.md 是规范性文档，优先级高于你自己的架构偏好。
+请先完整读取 docs/COREDESK_SPEC.md、IMPLEMENTATION_STATUS.md、当前 CMakeLists.txt 和现有测试。
+
+本轮只实现我明确指定的一个里程碑（M0-M8）。如果我没有指定里程碑，先询问，不要自行开始多个里程碑。
+
+强制要求：
+1. 不得开始后续里程碑。
+2. 不得增加规范未允许的第三方依赖。
+3. 不得修改固定协议字段、MessageType 数值、CMake target 名或 UI/Core 边界，除非规范自身无法编译；如发现冲突，先记录并停止相关点。
+4. core/index/filesystem/concurrency 的公共头文件不得出现任何 Qt 类型。
+5. 所有 owning resource 使用 RAII；禁止 owning raw pointer。
+6. 新功能必须有测试；不得删除或弱化现有测试来通过构建。
+7. 完成后必须运行完整 configure/build/ctest，并执行本里程碑 DoD 中的验收。
+8. 更新 IMPLEMENTATION_STATUS.md，写清修改文件、测试命令、结果、已知问题、是否偏离规范。
+9. 最后给出：变更摘要、关键设计点、测试结果、仍未完成事项。然后停止。
+
+在写代码前，先给出本轮计划修改的文件列表与依赖关系。
