@@ -22,6 +22,7 @@ include(cmake/CompilerWarnings.cmake)
 include(cmake/Sanitizers.cmake)
 
 add_library(coredesk_common
+    src/common/Cancellation.cpp
     src/common/Error.cpp
 )
 add_library(coredesk::common ALIAS coredesk_common)
@@ -34,13 +35,31 @@ target_compile_features(coredesk_common PUBLIC cxx_std_20)
 coredesk_set_target_warnings(coredesk_common)
 coredesk_enable_sanitizers(coredesk_common)
 
-add_library(coredesk_concurrency INTERFACE)
-target_link_libraries(coredesk_concurrency INTERFACE coredesk_common)
-target_compile_features(coredesk_concurrency INTERFACE cxx_std_20)
+add_library(coredesk_concurrency
+    src/concurrency/ThreadPool.cpp
+)
+target_link_libraries(coredesk_concurrency PUBLIC coredesk_common)
+target_include_directories(coredesk_concurrency
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_compile_features(coredesk_concurrency PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_concurrency)
+coredesk_enable_sanitizers(coredesk_concurrency)
 
-add_library(coredesk_filesystem INTERFACE)
-target_link_libraries(coredesk_filesystem INTERFACE coredesk_common)
-target_compile_features(coredesk_filesystem INTERFACE cxx_std_20)
+add_library(coredesk_filesystem
+    src/filesystem/FileScanner.cpp
+)
+target_link_libraries(coredesk_filesystem PUBLIC coredesk_common coredesk_concurrency)
+target_include_directories(coredesk_filesystem
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_compile_features(coredesk_filesystem PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_filesystem)
+coredesk_enable_sanitizers(coredesk_filesystem)
 
 add_library(coredesk_index INTERFACE)
 target_link_libraries(coredesk_index INTERFACE coredesk_common coredesk_filesystem)
@@ -78,6 +97,7 @@ add_executable(coredesk_cli
     apps/cli/main.cpp
 )
 target_link_libraries(coredesk_cli PRIVATE coredesk_common)
+target_link_libraries(coredesk_cli PRIVATE coredesk_filesystem)
 coredesk_set_target_warnings(coredesk_cli)
 coredesk_enable_sanitizers(coredesk_cli)
 
@@ -140,9 +160,11 @@ if(COREDESK_BUILD_TESTS)
     endif()
 
     add_executable(coredesk_tests
+        tests/unit/test_file_scanner.cpp
         tests/unit/test_result.cpp
+        tests/unit/test_thread_pool.cpp
     )
-    target_link_libraries(coredesk_tests PRIVATE coredesk_common GTest::gtest_main)
+    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem GTest::gtest_main)
     target_compile_features(coredesk_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_tests)
     coredesk_enable_sanitizers(coredesk_tests)
