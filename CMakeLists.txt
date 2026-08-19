@@ -76,9 +76,30 @@ target_compile_features(coredesk_index PUBLIC cxx_std_20)
 coredesk_set_target_warnings(coredesk_index)
 coredesk_enable_sanitizers(coredesk_index)
 
-add_library(coredesk_protocol INTERFACE)
-target_link_libraries(coredesk_protocol INTERFACE coredesk_common)
-target_compile_features(coredesk_protocol INTERFACE cxx_std_20)
+find_package(nlohmann_json CONFIG QUIET)
+if(NOT nlohmann_json_FOUND AND COREDESK_FETCH_DEPS)
+    include(FetchContent)
+    FetchContent_Declare(
+        nlohmann_json
+        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
+add_library(coredesk_protocol
+    src/protocol/FrameCodec.cpp
+    src/protocol/JsonPayload.cpp
+)
+target_link_libraries(coredesk_protocol PUBLIC coredesk_common)
+target_link_libraries(coredesk_protocol PRIVATE nlohmann_json::nlohmann_json)
+target_include_directories(coredesk_protocol
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_compile_features(coredesk_protocol PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_protocol)
+coredesk_enable_sanitizers(coredesk_protocol)
 
 add_library(coredesk_service_lib INTERFACE)
 target_link_libraries(coredesk_service_lib
@@ -90,19 +111,6 @@ target_link_libraries(coredesk_service_lib
         coredesk_protocol
 )
 target_compile_features(coredesk_service_lib INTERFACE cxx_std_20)
-
-find_package(nlohmann_json CONFIG QUIET)
-if(nlohmann_json_FOUND)
-    target_link_libraries(coredesk_protocol INTERFACE nlohmann_json::nlohmann_json)
-elseif(COREDESK_FETCH_DEPS)
-    include(FetchContent)
-    FetchContent_Declare(
-        nlohmann_json
-        URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
-    )
-    FetchContent_MakeAvailable(nlohmann_json)
-    target_link_libraries(coredesk_protocol INTERFACE nlohmann_json::nlohmann_json)
-endif()
 
 add_executable(coredesk_cli
     apps/cli/main.cpp
@@ -173,7 +181,9 @@ if(COREDESK_BUILD_TESTS)
     endif()
 
     add_executable(coredesk_tests
+        tests/unit/test_frame_protocol.cpp
         tests/unit/test_index_builder.cpp
+        tests/unit/test_json_payload.cpp
         tests/unit/test_file_scanner.cpp
         tests/unit/test_lru_cache.cpp
         tests/unit/test_result.cpp
@@ -181,7 +191,7 @@ if(COREDESK_BUILD_TESTS)
         tests/unit/test_thread_pool.cpp
         tests/unit/test_tokenizer.cpp
     )
-    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index GTest::gtest_main)
+    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index coredesk_protocol GTest::gtest_main)
     target_compile_features(coredesk_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_tests)
     coredesk_enable_sanitizers(coredesk_tests)
