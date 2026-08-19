@@ -61,9 +61,20 @@ target_compile_features(coredesk_filesystem PUBLIC cxx_std_20)
 coredesk_set_target_warnings(coredesk_filesystem)
 coredesk_enable_sanitizers(coredesk_filesystem)
 
-add_library(coredesk_index INTERFACE)
-target_link_libraries(coredesk_index INTERFACE coredesk_common coredesk_filesystem)
-target_compile_features(coredesk_index INTERFACE cxx_std_20)
+add_library(coredesk_index
+    src/index/IndexBuilder.cpp
+    src/index/SearchEngine.cpp
+    src/index/Tokenizer.cpp
+)
+target_link_libraries(coredesk_index PUBLIC coredesk_common coredesk_filesystem)
+target_include_directories(coredesk_index
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_compile_features(coredesk_index PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_index)
+coredesk_enable_sanitizers(coredesk_index)
 
 add_library(coredesk_protocol INTERFACE)
 target_link_libraries(coredesk_protocol INTERFACE coredesk_common)
@@ -98,6 +109,7 @@ add_executable(coredesk_cli
 )
 target_link_libraries(coredesk_cli PRIVATE coredesk_common)
 target_link_libraries(coredesk_cli PRIVATE coredesk_filesystem)
+target_link_libraries(coredesk_cli PRIVATE coredesk_index)
 coredesk_set_target_warnings(coredesk_cli)
 coredesk_enable_sanitizers(coredesk_cli)
 
@@ -141,6 +153,7 @@ add_executable(coredesk_bench_search
     benchmarks/bench_search.cpp
 )
 target_link_libraries(coredesk_bench_search PRIVATE coredesk_common)
+target_link_libraries(coredesk_bench_search PRIVATE coredesk_index)
 coredesk_set_target_warnings(coredesk_bench_search)
 coredesk_enable_sanitizers(coredesk_bench_search)
 
@@ -160,11 +173,15 @@ if(COREDESK_BUILD_TESTS)
     endif()
 
     add_executable(coredesk_tests
+        tests/unit/test_index_builder.cpp
         tests/unit/test_file_scanner.cpp
+        tests/unit/test_lru_cache.cpp
         tests/unit/test_result.cpp
+        tests/unit/test_search_engine.cpp
         tests/unit/test_thread_pool.cpp
+        tests/unit/test_tokenizer.cpp
     )
-    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem GTest::gtest_main)
+    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index GTest::gtest_main)
     target_compile_features(coredesk_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_tests)
     coredesk_enable_sanitizers(coredesk_tests)
