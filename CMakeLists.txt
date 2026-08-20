@@ -101,16 +101,25 @@ target_compile_features(coredesk_protocol PUBLIC cxx_std_20)
 coredesk_set_target_warnings(coredesk_protocol)
 coredesk_enable_sanitizers(coredesk_protocol)
 
-add_library(coredesk_service_lib INTERFACE)
+add_library(coredesk_service_lib
+    src/service/ServiceController.cpp
+)
 target_link_libraries(coredesk_service_lib
-    INTERFACE
+    PUBLIC
         coredesk_common
         coredesk_concurrency
         coredesk_filesystem
         coredesk_index
         coredesk_protocol
 )
-target_compile_features(coredesk_service_lib INTERFACE cxx_std_20)
+target_include_directories(coredesk_service_lib
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_compile_features(coredesk_service_lib PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_service_lib)
+coredesk_enable_sanitizers(coredesk_service_lib)
 
 add_executable(coredesk_cli
     apps/cli/main.cpp
@@ -121,31 +130,51 @@ target_link_libraries(coredesk_cli PRIVATE coredesk_index)
 coredesk_set_target_warnings(coredesk_cli)
 coredesk_enable_sanitizers(coredesk_cli)
 
+find_package(Qt6 REQUIRED COMPONENTS Core Network)
+if(COREDESK_BUILD_UI)
+    find_package(Qt6 REQUIRED COMPONENTS Widgets)
+endif()
+
+add_library(coredesk_qt_ipc
+    adapters/qt_ipc/LocalIpcClient.cpp
+)
+target_include_directories(coredesk_qt_ipc
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(coredesk_qt_ipc PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
+target_compile_features(coredesk_qt_ipc PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_qt_ipc)
+coredesk_enable_sanitizers(coredesk_qt_ipc)
+
+add_library(coredesk_qt_ipc_server
+    adapters/qt_ipc/LocalIpcServer.cpp
+)
+target_include_directories(coredesk_qt_ipc_server
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(coredesk_qt_ipc_server PUBLIC coredesk_protocol coredesk_service_lib Qt6::Core Qt6::Network)
+target_compile_features(coredesk_qt_ipc_server PUBLIC cxx_std_20)
+coredesk_set_target_warnings(coredesk_qt_ipc_server)
+coredesk_enable_sanitizers(coredesk_qt_ipc_server)
+
 add_executable(coredesk_service
     apps/service/main.cpp
 )
-target_link_libraries(coredesk_service PRIVATE coredesk_service_lib)
+target_link_libraries(coredesk_service PRIVATE coredesk_service_lib coredesk_qt_ipc_server Qt6::Core)
 coredesk_set_target_warnings(coredesk_service)
 coredesk_enable_sanitizers(coredesk_service)
 
-if(COREDESK_BUILD_UI OR COREDESK_BUILD_NETWORK)
-    find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
-endif()
-
 if(COREDESK_BUILD_UI)
-    add_library(coredesk_qt_ipc INTERFACE)
-    target_link_libraries(coredesk_qt_ipc INTERFACE coredesk_protocol Qt6::Core)
-    target_compile_features(coredesk_qt_ipc INTERFACE cxx_std_20)
-
     add_executable(coredesk_desktop
         apps/desktop/main.cpp
     )
     target_link_libraries(coredesk_desktop PRIVATE coredesk_qt_ipc Qt6::Widgets)
     coredesk_set_target_warnings(coredesk_desktop)
     coredesk_enable_sanitizers(coredesk_desktop)
-else()
-    add_library(coredesk_qt_ipc INTERFACE)
-    target_link_libraries(coredesk_qt_ipc INTERFACE coredesk_protocol)
 endif()
 
 if(COREDESK_BUILD_NETWORK)
@@ -184,6 +213,7 @@ if(COREDESK_BUILD_TESTS)
         tests/unit/test_frame_protocol.cpp
         tests/unit/test_index_builder.cpp
         tests/unit/test_json_payload.cpp
+        tests/unit/test_service_controller.cpp
         tests/unit/test_file_scanner.cpp
         tests/unit/test_lru_cache.cpp
         tests/unit/test_result.cpp
@@ -191,11 +221,27 @@ if(COREDESK_BUILD_TESTS)
         tests/unit/test_thread_pool.cpp
         tests/unit/test_tokenizer.cpp
     )
-    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index coredesk_protocol GTest::gtest_main)
+    target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index coredesk_protocol coredesk_service_lib GTest::gtest_main)
     target_compile_features(coredesk_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_tests)
     coredesk_enable_sanitizers(coredesk_tests)
 
     include(GoogleTest)
     gtest_discover_tests(coredesk_tests)
+
+    add_executable(coredesk_integration_tests
+        tests/integration/test_local_ipc.cpp
+    )
+    target_link_libraries(coredesk_integration_tests PRIVATE coredesk_common coredesk_protocol coredesk_service_lib coredesk_qt_ipc coredesk_qt_ipc_server Qt6::Core Qt6::Network GTest::gtest_main)
+    target_compile_features(coredesk_integration_tests PRIVATE cxx_std_20)
+    coredesk_set_target_warnings(coredesk_integration_tests)
+    coredesk_enable_sanitizers(coredesk_integration_tests)
+    add_test(NAME coredesk_integration_tests COMMAND coredesk_integration_tests)
+    if(WIN32)
+        get_filename_component(COREDESK_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+        set_tests_properties(coredesk_integration_tests
+            PROPERTIES
+                ENVIRONMENT "PATH=${COREDESK_QT_PREFIX}/bin"
+        )
+    endif()
 endif()

@@ -1,6 +1,6 @@
 function(coredesk_set_target_warnings target_name)
     if(MSVC)
-        target_compile_options(${target_name} PRIVATE /W4)
+        target_compile_options(${target_name} PRIVATE /W4 /EHsc)
         if(COREDESK_WARNINGS_AS_ERRORS)
             target_compile_options(${target_name} PRIVATE /WX)
         endif()
