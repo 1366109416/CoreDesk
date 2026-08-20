@@ -13,6 +13,12 @@ namespace {
 constexpr std::size_t kMaxQueryBytes = 256;
 constexpr std::size_t kMaxLimit = 100;
 
+struct RankedHit {
+    SearchHit hit;
+    std::size_t file_name_length{};
+    std::string normalized_relative_path;
+};
+
 bool starts_with(std::string_view value, std::string_view prefix) noexcept
 {
     return value.size() >= prefix.size() && value.substr(0, prefix.size()) == prefix;
@@ -93,14 +99,14 @@ std::unordered_set<std::string> record_tokens(const filesystem::FileRecord& reco
 }
 
 int score_index_hit(const filesystem::FileRecord& record,
+                    std::string_view normalized_file_name,
                     std::string_view normalized_query,
                     const std::vector<std::string>& query_tokens)
 {
-    const auto file_name = normalized_file_name(record);
-    if (file_name == normalized_query) {
+    if (normalized_file_name == normalized_query) {
         return 100;
     }
-    if (!normalized_query.empty() && starts_with(file_name, normalized_query)) {
+    if (!normalized_query.empty() && starts_with(normalized_file_name, normalized_query)) {
         return 80;
     }
 
@@ -122,21 +128,52 @@ int score_index_hit(const filesystem::FileRecord& record,
     return 30;
 }
 
-bool hit_less(const IndexSnapshot& snapshot, const SearchHit& left, const SearchHit& right)
+bool ranked_hit_less(const RankedHit& left, const RankedHit& right)
 {
-    if (left.score != right.score) {
-        return left.score > right.score;
+    if (left.hit.score != right.hit.score) {
+        return left.hit.score > right.hit.score;
     }
 
-    const auto left_record = snapshot.records.begin() + snapshot.id_to_pos.at(left.id);
-    const auto right_record = snapshot.records.begin() + snapshot.id_to_pos.at(right.id);
-    const auto left_name = path_to_index_text(left_record->file_name);
-    const auto right_name = path_to_index_text(right_record->file_name);
-    if (left_name.size() != right_name.size()) {
-        return left_name.size() < right_name.size();
+    if (left.file_name_length != right.file_name_length) {
+        return left.file_name_length < right.file_name_length;
     }
 
-    return normalized_relative_path(*left_record) < normalized_relative_path(*right_record);
+    return left.normalized_relative_path < right.normalized_relative_path;
+}
+
+RankedHit make_ranked_hit(const IndexSnapshot& snapshot,
+                          std::size_t pos,
+                          std::string_view normalized_query,
+                          const std::vector<std::string>& query_tokens,
+                          int fallback_score = 0)
+{
+    const auto& record = snapshot.records[pos];
+    const auto file_name = normalized_file_name(record);
+    const auto score = fallback_score == 0
+        ? score_index_hit(record, file_name, normalized_query, query_tokens)
+        : fallback_score;
+    return RankedHit{
+        SearchHit{record.id, score},
+        file_name.size(),
+        normalized_relative_path(record),
+    };
+}
+
+std::vector<SearchHit> top_hits(std::vector<RankedHit> ranked, std::size_t limit)
+{
+    if (ranked.size() > limit) {
+        std::partial_sort(ranked.begin(), ranked.begin() + static_cast<std::vector<RankedHit>::difference_type>(limit), ranked.end(), ranked_hit_less);
+        ranked.resize(limit);
+    } else {
+        std::sort(ranked.begin(), ranked.end(), ranked_hit_less);
+    }
+
+    std::vector<SearchHit> hits;
+    hits.reserve(ranked.size());
+    for (const auto& hit : ranked) {
+        hits.push_back(hit.hit);
+    }
+    return hits;
 }
 
 std::vector<SearchHit> build_index_hits(const IndexSnapshot& snapshot,
@@ -145,43 +182,31 @@ std::vector<SearchHit> build_index_hits(const IndexSnapshot& snapshot,
                                         const std::vector<std::string>& query_tokens,
                                         std::size_t limit)
 {
-    std::vector<SearchHit> hits;
-    hits.reserve(candidates.size());
+    std::vector<RankedHit> ranked;
+    ranked.reserve(candidates.size());
     for (const auto id : candidates) {
         const auto pos = snapshot.id_to_pos.find(id);
         if (pos == snapshot.id_to_pos.end()) {
             continue;
         }
-        hits.push_back({id, score_index_hit(snapshot.records[pos->second], normalized_query, query_tokens)});
+        ranked.push_back(make_ranked_hit(snapshot, pos->second, normalized_query, query_tokens));
     }
 
-    std::sort(hits.begin(), hits.end(), [&](const SearchHit& left, const SearchHit& right) {
-        return hit_less(snapshot, left, right);
-    });
-    if (hits.size() > limit) {
-        hits.resize(limit);
-    }
-    return hits;
+    return top_hits(std::move(ranked), limit);
 }
 
 std::vector<SearchHit> build_substring_hits(const IndexSnapshot& snapshot,
                                             std::string_view normalized_query,
                                             std::size_t limit)
 {
-    std::vector<SearchHit> hits;
-    for (std::size_t pos = 0; pos < snapshot.normalized_names.size() && hits.size() < kMaxLimit; ++pos) {
+    std::vector<RankedHit> ranked;
+    for (std::size_t pos = 0; pos < snapshot.normalized_names.size() && ranked.size() < kMaxLimit; ++pos) {
         if (snapshot.normalized_names[pos].find(normalized_query) != std::string::npos) {
-            hits.push_back({snapshot.records[pos].id, 30});
+            ranked.push_back(make_ranked_hit(snapshot, pos, normalized_query, {}, 30));
         }
     }
 
-    std::sort(hits.begin(), hits.end(), [&](const SearchHit& left, const SearchHit& right) {
-        return hit_less(snapshot, left, right);
-    });
-    if (hits.size() > limit) {
-        hits.resize(limit);
-    }
-    return hits;
+    return top_hits(std::move(ranked), limit);
 }
 
 } // namespace

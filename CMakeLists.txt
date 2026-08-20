@@ -171,7 +171,10 @@ coredesk_enable_sanitizers(coredesk_service)
 if(COREDESK_BUILD_UI)
     add_executable(coredesk_desktop
         apps/desktop/main.cpp
+        ui/MainWindow.cpp
+        ui/SearchWidget.cpp
     )
+    target_include_directories(coredesk_desktop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
     target_link_libraries(coredesk_desktop PRIVATE coredesk_qt_ipc Qt6::Widgets)
     coredesk_set_target_warnings(coredesk_desktop)
     coredesk_enable_sanitizers(coredesk_desktop)
@@ -243,5 +246,30 @@ if(COREDESK_BUILD_TESTS)
             PROPERTIES
                 ENVIRONMENT "PATH=${COREDESK_QT_PREFIX}/bin"
         )
+    endif()
+
+    if(COREDESK_BUILD_UI)
+        add_executable(coredesk_desktop_tests
+            tests/unit/test_desktop_ui.cpp
+            ui/MainWindow.cpp
+            ui/SearchWidget.cpp
+        )
+        target_include_directories(coredesk_desktop_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+        target_link_libraries(coredesk_desktop_tests PRIVATE coredesk_common coredesk_protocol coredesk_qt_ipc Qt6::Widgets GTest::gtest_main)
+        target_compile_features(coredesk_desktop_tests PRIVATE cxx_std_20)
+        coredesk_set_target_warnings(coredesk_desktop_tests)
+        coredesk_enable_sanitizers(coredesk_desktop_tests)
+        add_test(NAME coredesk_desktop_tests COMMAND coredesk_desktop_tests)
+        if(WIN32)
+            set_tests_properties(coredesk_desktop_tests
+                PROPERTIES
+                    ENVIRONMENT "PATH=${COREDESK_QT_PREFIX}/bin;QT_QPA_PLATFORM=offscreen"
+            )
+        else()
+            set_tests_properties(coredesk_desktop_tests
+                PROPERTIES
+                    ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            )
+        endif()
     endif()
 endif()
