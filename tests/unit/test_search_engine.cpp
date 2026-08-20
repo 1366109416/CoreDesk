@@ -4,6 +4,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <future>
+#include <thread>
 
 namespace coredesk::index {
 namespace {
@@ -260,6 +262,38 @@ TEST(SearchEngineTest, FilenamePrefixUsesFileNameNotPathPrefix)
     const auto response = search_or_fail(engine, *snapshot, "report");
     ASSERT_EQ(response.hits.size(), 1U);
     EXPECT_EQ(response.hits[0].score, 60);
+}
+
+TEST(SearchEngineTest, ConcurrentSearchesShareCacheSafely)
+{
+    std::vector<filesystem::FileRecord> records;
+    for (int i = 0; i < 500; ++i) {
+        records.push_back(make_record("project_report_" + std::to_string(i) + ".txt",
+                                      "dir/project_report_" + std::to_string(i) + ".txt"));
+    }
+    const auto snapshot = build_snapshot(std::move(records));
+    SearchEngine engine;
+
+    std::vector<std::future<void>> workers;
+    for (int worker = 0; worker < 8; ++worker) {
+        workers.push_back(std::async(std::launch::async, [&] {
+            for (int i = 0; i < 50; ++i) {
+                auto broad = engine.search(*snapshot, {"project", 100});
+                ASSERT_TRUE(broad.ok()) << broad.error().message;
+                ASSERT_FALSE(broad.value().hits.empty());
+                EXPECT_LE(broad.value().hits.size(), 100U);
+
+                auto narrow = engine.search(*snapshot, {"project_report_42", 100});
+                ASSERT_TRUE(narrow.ok()) << narrow.error().message;
+                ASSERT_FALSE(narrow.value().hits.empty());
+                EXPECT_EQ(narrow.value().hits.front().id, 43U);
+            }
+        }));
+    }
+
+    for (auto& worker : workers) {
+        worker.get();
+    }
 }
 
 } // namespace

@@ -1,0 +1,92 @@
+#pragma once
+
+#include "LocalIpcClient.h"
+#include "coredesk/protocol/Frame.h"
+
+#include <QMainWindow>
+#include <QProcess>
+#include <QTime>
+
+#include <optional>
+
+class QLabel;
+class QLineEdit;
+class QPushButton;
+class QTabWidget;
+class QTimer;
+
+namespace coredesk::ui {
+
+class SearchWidget;
+
+class MainWindow : public QMainWindow {
+public:
+    enum class ConnectionState {
+        Disconnected,
+        Connecting,
+        StartingService,
+        Connected,
+        Offline
+    };
+
+    explicit MainWindow(bool auto_connect_on_start = true, QWidget* parent = nullptr);
+
+    void retry_connection();
+    void handle_frame(const protocol::Frame& frame);
+    void handle_connected();
+    void handle_disconnected();
+    void handle_connection_error(const Error& error);
+
+    ConnectionState connection_state() const noexcept;
+    bool is_scanning() const noexcept;
+    QString status_text() const;
+    SearchWidget* search_widget() const noexcept;
+    void set_root_path(const QString& path);
+    QString root_path() const;
+    void set_latest_search_request_id_for_testing(RequestId request_id);
+    void set_active_scan_request_id_for_testing(RequestId request_id);
+
+private:
+    void build_ui();
+    void wire_callbacks();
+    void browse_root();
+    void handle_scan_button();
+    void start_scan();
+    void cancel_scan();
+    void send_search(const QString& query);
+    void attempt_connect();
+    void start_service_process();
+    QString service_executable_path() const;
+    void set_connection_state(ConnectionState state);
+    void set_scan_active(bool active);
+    void invalidate_pending_requests();
+    void update_status_line();
+    void apply_search_response(const protocol::Frame& frame);
+    void apply_scan_progress(const protocol::Frame& frame);
+    void apply_scan_completed(const protocol::Frame& frame);
+    void apply_scan_failed(const protocol::Frame& frame);
+    void apply_error_payload(const protocol::Frame& frame);
+
+    qt_ipc::LocalIpcClient client_;
+    QLineEdit* root_path_edit_{};
+    QPushButton* browse_button_{};
+    QPushButton* scan_button_{};
+    QPushButton* retry_button_{};
+    QLabel* status_label_{};
+    QTabWidget* tabs_{};
+    SearchWidget* search_widget_{};
+    QTimer* retry_timer_{};
+
+    ConnectionState connection_state_{ConnectionState::Disconnected};
+    bool auto_start_attempted_{false};
+    bool scanning_{false};
+    QTime retry_deadline_;
+    std::optional<RequestId> latest_search_request_id_;
+    std::optional<RequestId> active_scan_request_id_;
+    QString last_error_;
+    std::uint64_t file_count_{0};
+    std::uint64_t generation_{0};
+    std::uint64_t search_elapsed_us_{0};
+};
+
+} // namespace coredesk::ui

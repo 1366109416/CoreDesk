@@ -4,6 +4,7 @@
 #include <QLocalSocket>
 
 #include <cstddef>
+#include <string>
 #include <span>
 #include <utility>
 #include <vector>
@@ -41,6 +42,15 @@ LocalIpcClient::LocalIpcClient(QObject* parent)
     QObject::connect(socket_.get(), &QLocalSocket::readyRead, this, [this]() {
         handle_ready_read();
     });
+    QObject::connect(socket_.get(), &QLocalSocket::connected, this, [this]() {
+        handle_connected();
+    });
+    QObject::connect(socket_.get(), &QLocalSocket::disconnected, this, [this]() {
+        handle_disconnected();
+    });
+    QObject::connect(socket_.get(), &QLocalSocket::errorOccurred, this, [this]() {
+        handle_socket_error();
+    });
 }
 
 LocalIpcClient::~LocalIpcClient()
@@ -58,8 +68,19 @@ void LocalIpcClient::set_error_callback(ErrorCallback callback)
     error_callback_ = std::move(callback);
 }
 
+void LocalIpcClient::set_connected_callback(ConnectionCallback callback)
+{
+    connected_callback_ = std::move(callback);
+}
+
+void LocalIpcClient::set_disconnected_callback(ConnectionCallback callback)
+{
+    disconnected_callback_ = std::move(callback);
+}
+
 Result<void> LocalIpcClient::connect_to_server(const QString& name, int timeout_ms)
 {
+    decoder_.reset();
     socket_->connectToServer(name);
     if (!socket_->waitForConnected(timeout_ms)) {
         return Result<void>::failure({ErrorCode::ConnectionFailed, socket_->errorString().toStdString()});
@@ -67,10 +88,22 @@ Result<void> LocalIpcClient::connect_to_server(const QString& name, int timeout_
     return Result<void>::success();
 }
 
+void LocalIpcClient::connect_to_server_async(const QString& name)
+{
+    decoder_.reset();
+    if (socket_->state() != QLocalSocket::UnconnectedState) {
+        socket_->abort();
+    }
+    socket_->connectToServer(name);
+}
+
 void LocalIpcClient::disconnect_from_server()
 {
     if (socket_ && socket_->state() != QLocalSocket::UnconnectedState) {
         socket_->disconnectFromServer();
+        if (socket_->state() != QLocalSocket::UnconnectedState) {
+            socket_->abort();
+        }
     }
     decoder_.reset();
 }
@@ -131,7 +164,11 @@ Result<void> LocalIpcClient::send_frame(protocol::Frame frame)
     if (!is_connected()) {
         return Result<void>::failure({ErrorCode::ConnectionFailed, "local IPC client is not connected"});
     }
-    socket_->write(qbytearray_from_bytes(encoded.value()));
+    const auto bytes = qbytearray_from_bytes(encoded.value());
+    const auto written = socket_->write(bytes);
+    if (written != bytes.size()) {
+        return Result<void>::failure({ErrorCode::IoError, "failed to queue full local IPC frame"});
+    }
     return Result<void>::success();
 }
 
@@ -151,6 +188,30 @@ void LocalIpcClient::handle_ready_read()
         if (frame_callback_) {
             frame_callback_(frame);
         }
+    }
+}
+
+void LocalIpcClient::handle_connected()
+{
+    decoder_.reset();
+    if (connected_callback_) {
+        connected_callback_();
+    }
+}
+
+void LocalIpcClient::handle_disconnected()
+{
+    decoder_.reset();
+    if (disconnected_callback_) {
+        disconnected_callback_();
+    }
+}
+
+void LocalIpcClient::handle_socket_error()
+{
+    decoder_.reset();
+    if (error_callback_) {
+        error_callback_({ErrorCode::ConnectionFailed, socket_->errorString().toStdString()});
     }
 }
 

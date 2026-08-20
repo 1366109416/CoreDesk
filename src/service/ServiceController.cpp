@@ -18,10 +18,11 @@ Error make_error(ErrorCode code, std::string message)
     return {code, std::move(message)};
 }
 
-std::uint64_t file_time_to_ms(const std::filesystem::file_time_type& time)
+std::int64_t file_time_to_ms(const std::filesystem::file_time_type& time)
 {
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count());
+    const auto system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+        time - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now());
+    return std::chrono::duration_cast<std::chrono::milliseconds>(system_time.time_since_epoch()).count();
 }
 
 std::string entry_type_to_protocol(EntryType type)
@@ -307,7 +308,7 @@ protocol::SearchResponsePayload ServiceController::make_search_payload(const ind
             index::path_to_index_text(record.absolute_path),
             index::path_to_index_text(record.relative_path),
             static_cast<std::uint64_t>(record.size_bytes),
-            static_cast<std::int64_t>(file_time_to_ms(record.modified_time)),
+            file_time_to_ms(record.modified_time),
             entry_type_to_protocol(record.type),
             hit.score});
     }

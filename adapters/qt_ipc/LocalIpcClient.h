@@ -18,15 +18,19 @@ class LocalIpcClient : public QObject {
 public:
     using FrameCallback = std::function<void(const protocol::Frame&)>;
     using ErrorCallback = std::function<void(const Error&)>;
+    using ConnectionCallback = std::function<void()>;
 
     explicit LocalIpcClient(QObject* parent = nullptr);
     ~LocalIpcClient() override;
 
     void set_frame_callback(FrameCallback callback);
     void set_error_callback(ErrorCallback callback);
+    void set_connected_callback(ConnectionCallback callback);
+    void set_disconnected_callback(ConnectionCallback callback);
 
     Result<void> connect_to_server(const QString& name = QString::fromLatin1("CoreDesk.Service.v1"),
                                    int timeout_ms = 3000);
+    void connect_to_server_async(const QString& name = QString::fromLatin1("CoreDesk.Service.v1"));
     void disconnect_from_server();
     bool is_connected() const;
 
@@ -38,6 +42,9 @@ public:
 
 private:
     void handle_ready_read();
+    void handle_connected();
+    void handle_disconnected();
+    void handle_socket_error();
     RequestId next_request_id();
 
     std::unique_ptr<QLocalSocket> socket_;
@@ -45,6 +52,8 @@ private:
     RequestId next_request_id_{1};
     FrameCallback frame_callback_;
     ErrorCallback error_callback_;
+    ConnectionCallback connected_callback_;
+    ConnectionCallback disconnected_callback_;
 };
 
 } // namespace coredesk::qt_ipc

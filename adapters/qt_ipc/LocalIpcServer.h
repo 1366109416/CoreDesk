@@ -1,6 +1,7 @@
 #pragma once
 
 #include "coredesk/common/Result.h"
+#include "coredesk/concurrency/ThreadPool.h"
 #include "coredesk/protocol/FrameCodec.h"
 #include "coredesk/service/ServiceController.h"
 
@@ -36,6 +37,7 @@ private:
     void handle_ready_read(QLocalSocket* socket);
     void handle_disconnected(QLocalSocket* socket);
     void dispatch_frame(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_search_request(QLocalSocket* socket, const protocol::Frame& frame);
     void send_frame(QLocalSocket* socket, protocol::Frame frame);
     void send_error(QLocalSocket* socket, protocol::MessageType type, RequestId request_id, const Error& error);
     void close_protocol_error(QLocalSocket* socket, const Error& error);
@@ -44,6 +46,7 @@ private:
     service::ServiceController& controller_;
     std::unique_ptr<QLocalServer> server_;
     std::unordered_map<QLocalSocket*, std::unique_ptr<Connection>> connections_;
+    concurrency::ThreadPool search_pool_{2};
 };
 
 } // namespace coredesk::qt_ipc

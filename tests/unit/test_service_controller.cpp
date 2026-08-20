@@ -105,6 +105,33 @@ TEST(ServiceControllerTest, ScanAcceptedAndSearchAfterSuccessfulScan)
     EXPECT_EQ(search.value().results[0].name, "project_report_2026.txt");
 }
 
+TEST(ServiceControllerTest, SearchResultModifiedMsUsesSystemClockEpoch)
+{
+    TempDirectory temp;
+    temp.write_file("dated_report.txt", "x");
+    const auto file_path = temp.path() / "dated_report.txt";
+    const auto before = std::chrono::system_clock::now() - std::chrono::minutes(1);
+    std::filesystem::last_write_time(file_path, std::filesystem::file_time_type::clock::now());
+    const auto after = std::chrono::system_clock::now() + std::chrono::minutes(1);
+
+    ServiceController controller;
+    std::promise<Result<ScanCompletedPayload>> completed_promise;
+    auto completed_future = completed_promise.get_future();
+    ASSERT_TRUE(controller.start_scan(1, scan_request_for(temp.path()), {}, [&](auto, auto result) {
+        completed_promise.set_value(std::move(result));
+    }).ok());
+    ASSERT_TRUE(wait_for_completion(completed_future).ok());
+
+    auto search = controller.search(SearchRequestPayload{"dated", 100});
+    ASSERT_TRUE(search.ok());
+    ASSERT_EQ(search.value().results.size(), 1U);
+
+    const auto modified = std::chrono::system_clock::time_point{
+        std::chrono::milliseconds(search.value().results[0].modified_ms)};
+    EXPECT_GE(modified, before);
+    EXPECT_LE(modified, after);
+}
+
 TEST(ServiceControllerTest, SecondScanWhileBusyReturnsBusy)
 {
     TempDirectory temp;

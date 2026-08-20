@@ -9,7 +9,9 @@
 #include <QPointer>
 
 #include <cstddef>
+#include <exception>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -56,6 +58,7 @@ LocalIpcServer::LocalIpcServer(service::ServiceController& controller, QObject* 
 
 LocalIpcServer::~LocalIpcServer()
 {
+    search_pool_.shutdown();
     close();
     controller_.shutdown();
 }
@@ -223,29 +226,60 @@ void LocalIpcServer::dispatch_frame(QLocalSocket* socket, const protocol::Frame&
     }
 
     case protocol::MessageType::SearchRequest: {
-        auto payload = protocol::decode_search_request_payload(frame.payload);
-        if (!payload.ok()) {
-            send_error(socket, protocol::MessageType::SearchResponse, frame.request_id, payload.error());
-            return;
-        }
-        auto response = controller_.search(payload.value());
-        if (!response.ok()) {
-            send_error(socket, protocol::MessageType::SearchResponse, frame.request_id, response.error());
-            return;
-        }
-        auto encoded = protocol::encode_search_response_payload(response.value());
-        if (!encoded.ok()) {
-            send_error(socket, protocol::MessageType::SearchResponse, frame.request_id, encoded.error());
-            return;
-        }
-        send_frame(socket,
-                   protocol::Frame{protocol::MessageType::SearchResponse, 0, frame.request_id, std::move(encoded).value()});
+        dispatch_search_request(socket, frame);
         return;
     }
 
     default:
         send_error(socket, frame.type, frame.request_id, invalid_request("message type is not supported in M4"));
         return;
+    }
+}
+
+void LocalIpcServer::dispatch_search_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_search_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::SearchResponse, frame.request_id, payload.error());
+        return;
+    }
+
+    QPointer<QLocalSocket> requester(socket);
+    const auto request_id = frame.request_id;
+    const auto submitted = search_pool_.submit([this, requester, request_id, payload = std::move(payload).value()]() mutable {
+        Result<protocol::SearchResponsePayload> response =
+            Result<protocol::SearchResponsePayload>::failure({ErrorCode::InternalError, "search failed"});
+        try {
+            response = controller_.search(payload);
+        } catch (const std::exception& ex) {
+            response = Result<protocol::SearchResponsePayload>::failure({ErrorCode::InternalError, ex.what()});
+        } catch (...) {
+            response = Result<protocol::SearchResponsePayload>::failure(
+                {ErrorCode::InternalError, "search failed with an unknown exception"});
+        }
+
+        QMetaObject::invokeMethod(this, [this, requester, request_id, response = std::move(response)]() mutable {
+            if (!requester || !connections_.contains(requester)) {
+                return;
+            }
+            if (!response.ok()) {
+                send_error(requester, protocol::MessageType::SearchResponse, request_id, response.error());
+                return;
+            }
+            auto encoded = protocol::encode_search_response_payload(response.value());
+            if (!encoded.ok()) {
+                send_error(requester, protocol::MessageType::SearchResponse, request_id, encoded.error());
+                return;
+            }
+            send_frame(requester,
+                       protocol::Frame{protocol::MessageType::SearchResponse, 0, request_id, std::move(encoded).value()});
+        }, Qt::QueuedConnection);
+    });
+    if (!submitted) {
+        send_error(socket,
+                   protocol::MessageType::SearchResponse,
+                   request_id,
+                   {ErrorCode::Cancelled, "search executor is shutting down"});
     }
 }
 
