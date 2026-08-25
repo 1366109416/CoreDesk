@@ -199,6 +199,11 @@ else()
     target_link_libraries(coredesk_qt_network INTERFACE coredesk_protocol)
 endif()
 
+if(COREDESK_BUILD_NETWORK)
+    target_link_libraries(coredesk_service PRIVATE coredesk_qt_network)
+    target_compile_definitions(coredesk_service PRIVATE COREDESK_BUILD_NETWORK=1)
+endif()
+
 add_executable(coredesk_bench_search
     benchmarks/bench_search.cpp
 )
@@ -247,6 +252,7 @@ if(COREDESK_BUILD_TESTS)
     )
     if(COREDESK_BUILD_NETWORK)
         list(APPEND COREDESK_INTEGRATION_TEST_SOURCES
+            tests/integration/test_service_tcp_integration.cpp
             tests/integration/test_tcp_transfer.cpp
         )
     endif()
