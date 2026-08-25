@@ -99,5 +99,95 @@ bytes for:
 Malformed JSON syntax maps to `ProtocolError`. Valid JSON that does not satisfy
 the expected schema maps to `InvalidArgument`.
 
-M3 does not implement service routing, local IPC, Qt UI, TCP transfer, or file
-transfer behavior.
+M6 adds protocol-layer helpers for LAN transfer control payloads. These helpers
+only validate wire/schema details; TCP sockets, filesystem writes, SHA-256
+calculation, service routing, and UI behavior are implemented outside the
+protocol layer.
+
+### LAN Transfer JSON Payloads
+
+`Hello` and `HelloAck`:
+
+```json
+{ "protocol_version": 1, "node_name": "MyPC" }
+```
+
+`protocol_version` must be `1`.
+
+`FileOffer`:
+
+```json
+{
+  "transfer_id": "32-lowercase-hex-chars",
+  "file_name": "report.pdf",
+  "file_size": 123456789,
+  "chunk_size": 262144,
+  "sha256": "64-lowercase-hex-chars"
+}
+```
+
+Protocol-layer validation requires:
+
+- `transfer_id` is exactly 32 lowercase hex characters.
+- `sha256` is exactly 64 lowercase hex characters.
+- `file_name` is a basename-style wire value and must not be empty or contain
+  `/`, `\`, or `..`.
+- `chunk_size` is nonzero and must fit within the maximum frame payload once
+  the `FileChunk` binary prefix is included.
+
+`FileAccept`:
+
+```json
+{ "transfer_id": "32-lowercase-hex-chars", "start_offset": 0 }
+```
+
+For v1.0, `start_offset` must be `0`. Nonzero resume offsets are reserved for a
+future milestone.
+
+`FileReject`:
+
+```json
+{
+  "transfer_id": "32-lowercase-hex-chars",
+  "code": "TARGET_EXISTS",
+  "message": "target already exists"
+}
+```
+
+`FileFinish`:
+
+```json
+{ "transfer_id": "32-lowercase-hex-chars" }
+```
+
+`FileResult`:
+
+```json
+{
+  "transfer_id": "32-lowercase-hex-chars",
+  "ok": false,
+  "code": "HASH_MISMATCH",
+  "message": "hash mismatch"
+}
+```
+
+`code` values reuse the shared CoreDesk error-code strings used by error
+response payloads.
+
+### FileChunk Binary Payload
+
+`FileChunk` is not JSON. Its payload is binary:
+
+```text
+32 bytes  transfer_id ASCII lowercase hex
+8 bytes   offset, big-endian uint64
+4 bytes   data_length, big-endian uint32
+N bytes   file data
+```
+
+The full binary payload, including the 44-byte prefix, must not exceed the
+global 1 MiB frame payload limit. `data_length` must exactly match the remaining
+payload byte count.
+
+M6 protocol-layer work does not implement TCP transport, file IO, SHA-256
+calculation, `.part` files, service integration, or UI integration.

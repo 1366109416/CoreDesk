@@ -1,5 +1,7 @@
 #include "coredesk/protocol/JsonPayload.h"
 
+#include "coredesk/protocol/Frame.h"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -11,6 +13,11 @@ namespace coredesk::protocol {
 namespace {
 
 using Json = nlohmann::json;
+
+inline constexpr std::size_t kTransferIdLength = 32;
+inline constexpr std::size_t kSha256Length = 64;
+inline constexpr std::size_t kFileChunkPrefixSize = kTransferIdLength + 8 + 4;
+inline constexpr std::size_t kMaxFileChunkDataSize = kMaxPayloadSize - kFileChunkPrefixSize;
 
 std::vector<std::byte> to_bytes(const std::string& text)
 {
@@ -30,6 +37,88 @@ std::string to_string(std::span<const std::byte> bytes)
         text.push_back(static_cast<char>(byte));
     }
     return text;
+}
+
+bool is_lower_hex(std::string_view text, std::size_t length)
+{
+    if (text.size() != length) {
+        return false;
+    }
+    return std::all_of(text.begin(), text.end(), [](const char ch) {
+        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+    });
+}
+
+bool is_safe_transfer_file_name(std::string_view name)
+{
+    return !name.empty() &&
+        name.find('/') == std::string_view::npos &&
+        name.find('\\') == std::string_view::npos &&
+        name.find("..") == std::string_view::npos;
+}
+
+Result<void> validate_transfer_id(std::string_view transfer_id)
+{
+    if (!is_lower_hex(transfer_id, kTransferIdLength)) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "invalid transfer_id"});
+    }
+    return Result<void>::success();
+}
+
+Result<void> validate_sha256(std::string_view sha256)
+{
+    if (!is_lower_hex(sha256, kSha256Length)) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "invalid sha256"});
+    }
+    return Result<void>::success();
+}
+
+Result<void> validate_file_name(std::string_view file_name)
+{
+    if (!is_safe_transfer_file_name(file_name)) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "invalid file_name"});
+    }
+    return Result<void>::success();
+}
+
+Result<void> validate_chunk_size(std::uint64_t chunk_size)
+{
+    if (chunk_size == 0 || chunk_size > kMaxFileChunkDataSize) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "invalid chunk_size"});
+    }
+    return Result<void>::success();
+}
+
+void append_be_u64(std::vector<std::byte>& out, std::uint64_t value)
+{
+    for (int shift = 56; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::byte>((value >> shift) & 0xffU));
+    }
+}
+
+void append_be_u32(std::vector<std::byte>& out, std::uint32_t value)
+{
+    for (int shift = 24; shift >= 0; shift -= 8) {
+        out.push_back(static_cast<std::byte>((value >> shift) & 0xffU));
+    }
+}
+
+std::uint64_t read_be_u64(std::span<const std::byte> bytes)
+{
+    std::uint64_t value = 0;
+    for (const auto byte : bytes) {
+        value = (value << 8U) | static_cast<std::uint64_t>(std::to_integer<unsigned char>(byte));
+    }
+    return value;
+}
+
+std::uint32_t read_be_u32(std::span<const std::byte> bytes)
+{
+    std::uint32_t value = 0;
+    for (const auto byte : bytes) {
+        value = (value << 8U) | static_cast<std::uint32_t>(std::to_integer<unsigned char>(byte));
+    }
+    return value;
 }
 
 Result<Json> parse_json(std::span<const std::byte> bytes)
@@ -80,6 +169,18 @@ Result<std::uint64_t> required_u64(const Json& json, std::string_view field)
         return missing_or_wrong_type<std::uint64_t>(field);
     }
     return Result<std::uint64_t>::success(it->get<std::uint64_t>());
+}
+
+Result<std::uint32_t> required_u32(const Json& json, std::string_view field)
+{
+    auto value = required_u64(json, field);
+    if (!value.ok()) {
+        return Result<std::uint32_t>::failure(value.error());
+    }
+    if (value.value() > static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max())) {
+        return Result<std::uint32_t>::failure({ErrorCode::InvalidArgument, "field is too large: " + std::string(field)});
+    }
+    return Result<std::uint32_t>::success(static_cast<std::uint32_t>(value.value()));
 }
 
 Result<std::size_t> required_size(const Json& json, std::string_view field)
@@ -528,6 +629,305 @@ Result<ErrorResponsePayload> decode_error_response_payload(std::span<const std::
         payload.message = std::move(message).value();
         return Result<ErrorResponsePayload>::success(std::move(payload));
     });
+}
+
+Result<std::vector<std::byte>> encode_hello_payload(const HelloPayload& payload)
+{
+    if (payload.protocol_version != kFrameVersion) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "invalid protocol_version"});
+    }
+    return dump_json(Json{{"protocol_version", payload.protocol_version}, {"node_name", payload.node_name}});
+}
+
+Result<HelloPayload> decode_hello_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<HelloPayload>(bytes, [](const Json& json) -> Result<HelloPayload> {
+        auto protocol_version = required_u32(json, "protocol_version");
+        auto node_name = required_string(json, "node_name");
+        if (!protocol_version.ok()) {
+            return Result<HelloPayload>::failure(protocol_version.error());
+        }
+        if (!node_name.ok()) {
+            return Result<HelloPayload>::failure(node_name.error());
+        }
+        if (protocol_version.value() != kFrameVersion) {
+            return Result<HelloPayload>::failure({ErrorCode::InvalidArgument, "invalid protocol_version"});
+        }
+        return Result<HelloPayload>::success(HelloPayload{protocol_version.value(), std::move(node_name).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_hello_ack_payload(const HelloAckPayload& payload)
+{
+    if (payload.protocol_version != kFrameVersion) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "invalid protocol_version"});
+    }
+    return dump_json(Json{{"protocol_version", payload.protocol_version}, {"node_name", payload.node_name}});
+}
+
+Result<HelloAckPayload> decode_hello_ack_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<HelloAckPayload>(bytes, [](const Json& json) -> Result<HelloAckPayload> {
+        auto protocol_version = required_u32(json, "protocol_version");
+        auto node_name = required_string(json, "node_name");
+        if (!protocol_version.ok()) {
+            return Result<HelloAckPayload>::failure(protocol_version.error());
+        }
+        if (!node_name.ok()) {
+            return Result<HelloAckPayload>::failure(node_name.error());
+        }
+        if (protocol_version.value() != kFrameVersion) {
+            return Result<HelloAckPayload>::failure({ErrorCode::InvalidArgument, "invalid protocol_version"});
+        }
+        return Result<HelloAckPayload>::success(HelloAckPayload{protocol_version.value(), std::move(node_name).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_offer_payload(const FileOfferPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    if (auto valid = validate_file_name(payload.file_name); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    if (auto valid = validate_chunk_size(payload.chunk_size); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    if (auto valid = validate_sha256(payload.sha256); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"transfer_id", payload.transfer_id},
+                          {"file_name", payload.file_name},
+                          {"file_size", payload.file_size},
+                          {"chunk_size", payload.chunk_size},
+                          {"sha256", payload.sha256}});
+}
+
+Result<FileOfferPayload> decode_file_offer_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<FileOfferPayload>(bytes, [](const Json& json) -> Result<FileOfferPayload> {
+        auto transfer_id = required_string(json, "transfer_id");
+        auto file_name = required_string(json, "file_name");
+        auto file_size = required_u64(json, "file_size");
+        auto chunk_size = required_u64(json, "chunk_size");
+        auto sha256 = required_string(json, "sha256");
+        if (!transfer_id.ok()) {
+            return Result<FileOfferPayload>::failure(transfer_id.error());
+        }
+        if (!file_name.ok()) {
+            return Result<FileOfferPayload>::failure(file_name.error());
+        }
+        if (!file_size.ok()) {
+            return Result<FileOfferPayload>::failure(file_size.error());
+        }
+        if (!chunk_size.ok()) {
+            return Result<FileOfferPayload>::failure(chunk_size.error());
+        }
+        if (!sha256.ok()) {
+            return Result<FileOfferPayload>::failure(sha256.error());
+        }
+        if (auto valid = validate_transfer_id(transfer_id.value()); !valid.ok()) {
+            return Result<FileOfferPayload>::failure(valid.error());
+        }
+        if (auto valid = validate_file_name(file_name.value()); !valid.ok()) {
+            return Result<FileOfferPayload>::failure(valid.error());
+        }
+        if (auto valid = validate_chunk_size(chunk_size.value()); !valid.ok()) {
+            return Result<FileOfferPayload>::failure(valid.error());
+        }
+        if (auto valid = validate_sha256(sha256.value()); !valid.ok()) {
+            return Result<FileOfferPayload>::failure(valid.error());
+        }
+        return Result<FileOfferPayload>::success(FileOfferPayload{std::move(transfer_id).value(),
+                                                                  std::move(file_name).value(),
+                                                                  file_size.value(),
+                                                                  chunk_size.value(),
+                                                                  std::move(sha256).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_accept_payload(const FileAcceptPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    if (payload.start_offset != 0) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "start_offset must be 0 in v1.0"});
+    }
+    return dump_json(Json{{"transfer_id", payload.transfer_id}, {"start_offset", payload.start_offset}});
+}
+
+Result<FileAcceptPayload> decode_file_accept_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<FileAcceptPayload>(bytes, [](const Json& json) -> Result<FileAcceptPayload> {
+        auto transfer_id = required_string(json, "transfer_id");
+        auto start_offset = required_u64(json, "start_offset");
+        if (!transfer_id.ok()) {
+            return Result<FileAcceptPayload>::failure(transfer_id.error());
+        }
+        if (!start_offset.ok()) {
+            return Result<FileAcceptPayload>::failure(start_offset.error());
+        }
+        if (auto valid = validate_transfer_id(transfer_id.value()); !valid.ok()) {
+            return Result<FileAcceptPayload>::failure(valid.error());
+        }
+        if (start_offset.value() != 0) {
+            return Result<FileAcceptPayload>::failure({ErrorCode::InvalidArgument, "start_offset must be 0 in v1.0"});
+        }
+        return Result<FileAcceptPayload>::success(FileAcceptPayload{std::move(transfer_id).value(), start_offset.value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_reject_payload(const FileRejectPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"transfer_id", payload.transfer_id},
+                          {"code", error_code_to_protocol(payload.code)},
+                          {"message", payload.message}});
+}
+
+Result<FileRejectPayload> decode_file_reject_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<FileRejectPayload>(bytes, [](const Json& json) -> Result<FileRejectPayload> {
+        auto transfer_id = required_string(json, "transfer_id");
+        auto code_text = required_string(json, "code");
+        auto message = required_string(json, "message");
+        if (!transfer_id.ok()) {
+            return Result<FileRejectPayload>::failure(transfer_id.error());
+        }
+        if (!code_text.ok()) {
+            return Result<FileRejectPayload>::failure(code_text.error());
+        }
+        if (!message.ok()) {
+            return Result<FileRejectPayload>::failure(message.error());
+        }
+        if (auto valid = validate_transfer_id(transfer_id.value()); !valid.ok()) {
+            return Result<FileRejectPayload>::failure(valid.error());
+        }
+        auto code = error_code_from_protocol(code_text.value());
+        if (!code.ok()) {
+            return Result<FileRejectPayload>::failure(code.error());
+        }
+        return Result<FileRejectPayload>::success(
+            FileRejectPayload{std::move(transfer_id).value(), code.value(), std::move(message).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_finish_payload(const FileFinishPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"transfer_id", payload.transfer_id}});
+}
+
+Result<FileFinishPayload> decode_file_finish_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<FileFinishPayload>(bytes, [](const Json& json) -> Result<FileFinishPayload> {
+        auto transfer_id = required_string(json, "transfer_id");
+        if (!transfer_id.ok()) {
+            return Result<FileFinishPayload>::failure(transfer_id.error());
+        }
+        if (auto valid = validate_transfer_id(transfer_id.value()); !valid.ok()) {
+            return Result<FileFinishPayload>::failure(valid.error());
+        }
+        return Result<FileFinishPayload>::success(FileFinishPayload{std::move(transfer_id).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_result_payload(const FileResultPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"transfer_id", payload.transfer_id},
+                          {"ok", payload.ok},
+                          {"code", error_code_to_protocol(payload.code)},
+                          {"message", payload.message}});
+}
+
+Result<FileResultPayload> decode_file_result_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<FileResultPayload>(bytes, [](const Json& json) -> Result<FileResultPayload> {
+        auto transfer_id = required_string(json, "transfer_id");
+        auto ok = required_bool(json, "ok");
+        auto code_text = required_string(json, "code");
+        auto message = required_string(json, "message");
+        if (!transfer_id.ok()) {
+            return Result<FileResultPayload>::failure(transfer_id.error());
+        }
+        if (!ok.ok()) {
+            return Result<FileResultPayload>::failure(ok.error());
+        }
+        if (!code_text.ok()) {
+            return Result<FileResultPayload>::failure(code_text.error());
+        }
+        if (!message.ok()) {
+            return Result<FileResultPayload>::failure(message.error());
+        }
+        if (auto valid = validate_transfer_id(transfer_id.value()); !valid.ok()) {
+            return Result<FileResultPayload>::failure(valid.error());
+        }
+        auto code = error_code_from_protocol(code_text.value());
+        if (!code.ok()) {
+            return Result<FileResultPayload>::failure(code.error());
+        }
+        return Result<FileResultPayload>::success(
+            FileResultPayload{std::move(transfer_id).value(), ok.value(), code.value(), std::move(message).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_file_chunk_payload(const FileChunkPayload& payload)
+{
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    if (payload.data.size() > kMaxFileChunkDataSize) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::PayloadTooLarge, "file chunk payload is too large"});
+    }
+
+    std::vector<std::byte> bytes;
+    bytes.reserve(kFileChunkPrefixSize + payload.data.size());
+    for (const unsigned char ch : payload.transfer_id) {
+        bytes.push_back(static_cast<std::byte>(ch));
+    }
+    append_be_u64(bytes, payload.offset);
+    append_be_u32(bytes, static_cast<std::uint32_t>(payload.data.size()));
+    bytes.insert(bytes.end(), payload.data.begin(), payload.data.end());
+    return Result<std::vector<std::byte>>::success(std::move(bytes));
+}
+
+Result<FileChunkPayload> decode_file_chunk_payload(std::span<const std::byte> bytes)
+{
+    if (bytes.size() > kMaxPayloadSize) {
+        return Result<FileChunkPayload>::failure({ErrorCode::PayloadTooLarge, "file chunk payload is too large"});
+    }
+    if (bytes.size() < kFileChunkPrefixSize) {
+        return Result<FileChunkPayload>::failure({ErrorCode::InvalidArgument, "file chunk payload is too short"});
+    }
+
+    FileChunkPayload payload;
+    payload.transfer_id.reserve(kTransferIdLength);
+    for (std::size_t i = 0; i < kTransferIdLength; ++i) {
+        payload.transfer_id.push_back(static_cast<char>(std::to_integer<unsigned char>(bytes[i])));
+    }
+    if (auto valid = validate_transfer_id(payload.transfer_id); !valid.ok()) {
+        return Result<FileChunkPayload>::failure(valid.error());
+    }
+
+    payload.offset = read_be_u64(bytes.subspan(kTransferIdLength, 8));
+    const auto data_length = read_be_u32(bytes.subspan(kTransferIdLength + 8, 4));
+    if (data_length > kMaxFileChunkDataSize) {
+        return Result<FileChunkPayload>::failure({ErrorCode::PayloadTooLarge, "file chunk data is too large"});
+    }
+    if (bytes.size() != kFileChunkPrefixSize + static_cast<std::size_t>(data_length)) {
+        return Result<FileChunkPayload>::failure({ErrorCode::InvalidArgument, "file chunk data_length mismatch"});
+    }
+    payload.data.assign(bytes.begin() + static_cast<std::ptrdiff_t>(kFileChunkPrefixSize), bytes.end());
+    return Result<FileChunkPayload>::success(std::move(payload));
 }
 
 } // namespace coredesk::protocol

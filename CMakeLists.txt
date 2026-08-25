@@ -181,9 +181,19 @@ if(COREDESK_BUILD_UI)
 endif()
 
 if(COREDESK_BUILD_NETWORK)
-    add_library(coredesk_qt_network INTERFACE)
-    target_link_libraries(coredesk_qt_network INTERFACE coredesk_protocol Qt6::Core Qt6::Network)
-    target_compile_features(coredesk_qt_network INTERFACE cxx_std_20)
+    add_library(coredesk_qt_network
+        adapters/qt_network/TcpTransferClient.cpp
+        adapters/qt_network/TcpTransferServer.cpp
+    )
+    target_include_directories(coredesk_qt_network
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_network>
+            $<INSTALL_INTERFACE:include>
+    )
+    target_link_libraries(coredesk_qt_network PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
+    target_compile_features(coredesk_qt_network PUBLIC cxx_std_20)
+    coredesk_set_target_warnings(coredesk_qt_network)
+    coredesk_enable_sanitizers(coredesk_qt_network)
 else()
     add_library(coredesk_qt_network INTERFACE)
     target_link_libraries(coredesk_qt_network INTERFACE coredesk_protocol)
@@ -232,10 +242,22 @@ if(COREDESK_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(coredesk_tests)
 
-    add_executable(coredesk_integration_tests
+    set(COREDESK_INTEGRATION_TEST_SOURCES
         tests/integration/test_local_ipc.cpp
     )
+    if(COREDESK_BUILD_NETWORK)
+        list(APPEND COREDESK_INTEGRATION_TEST_SOURCES
+            tests/integration/test_tcp_transfer.cpp
+        )
+    endif()
+
+    add_executable(coredesk_integration_tests
+        ${COREDESK_INTEGRATION_TEST_SOURCES}
+    )
     target_link_libraries(coredesk_integration_tests PRIVATE coredesk_common coredesk_protocol coredesk_service_lib coredesk_qt_ipc coredesk_qt_ipc_server Qt6::Core Qt6::Network GTest::gtest_main)
+    if(COREDESK_BUILD_NETWORK)
+        target_link_libraries(coredesk_integration_tests PRIVATE coredesk_qt_network)
+    endif()
     target_compile_features(coredesk_integration_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_integration_tests)
     coredesk_enable_sanitizers(coredesk_integration_tests)

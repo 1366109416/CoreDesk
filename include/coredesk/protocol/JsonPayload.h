@@ -64,6 +64,52 @@ struct ErrorResponsePayload {
     std::string message;
 };
 
+struct HelloPayload {
+    std::uint32_t protocol_version{1};
+    std::string node_name;
+};
+
+struct HelloAckPayload {
+    std::uint32_t protocol_version{1};
+    std::string node_name;
+};
+
+struct FileOfferPayload {
+    std::string transfer_id;
+    std::string file_name;
+    std::uint64_t file_size{};
+    std::uint64_t chunk_size{};
+    std::string sha256;
+};
+
+struct FileAcceptPayload {
+    std::string transfer_id;
+    std::uint64_t start_offset{};
+};
+
+struct FileRejectPayload {
+    std::string transfer_id;
+    ErrorCode code{ErrorCode::Ok};
+    std::string message;
+};
+
+struct FileFinishPayload {
+    std::string transfer_id;
+};
+
+struct FileResultPayload {
+    std::string transfer_id;
+    bool ok{false};
+    ErrorCode code{ErrorCode::Ok};
+    std::string message;
+};
+
+struct FileChunkPayload {
+    std::string transfer_id;
+    std::uint64_t offset{};
+    std::vector<std::byte> data;
+};
+
 Result<std::vector<std::byte>> encode_scan_request_payload(const ScanRequestPayload& payload);
 Result<ScanRequestPayload> decode_scan_request_payload(std::span<const std::byte> bytes);
 
@@ -81,5 +127,29 @@ Result<SearchResponsePayload> decode_search_response_payload(std::span<const std
 
 Result<std::vector<std::byte>> encode_error_response_payload(const ErrorResponsePayload& payload);
 Result<ErrorResponsePayload> decode_error_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_hello_payload(const HelloPayload& payload);
+Result<HelloPayload> decode_hello_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_hello_ack_payload(const HelloAckPayload& payload);
+Result<HelloAckPayload> decode_hello_ack_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_offer_payload(const FileOfferPayload& payload);
+Result<FileOfferPayload> decode_file_offer_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_accept_payload(const FileAcceptPayload& payload);
+Result<FileAcceptPayload> decode_file_accept_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_reject_payload(const FileRejectPayload& payload);
+Result<FileRejectPayload> decode_file_reject_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_finish_payload(const FileFinishPayload& payload);
+Result<FileFinishPayload> decode_file_finish_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_result_payload(const FileResultPayload& payload);
+Result<FileResultPayload> decode_file_result_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_file_chunk_payload(const FileChunkPayload& payload);
+Result<FileChunkPayload> decode_file_chunk_payload(std::span<const std::byte> bytes);
 
 } // namespace coredesk::protocol
