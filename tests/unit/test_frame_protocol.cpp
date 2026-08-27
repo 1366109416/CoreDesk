@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -279,4 +280,58 @@ TEST(FrameProtocolTest, EncoderRejectsUnknownMessageType)
     auto encoded = FrameEncoder::encode(frame);
     ASSERT_FALSE(encoded.ok());
     EXPECT_EQ(encoded.error().code, ErrorCode::ProtocolError);
+}
+
+TEST(FrameProtocolTest, M7TransferManagementMessageTypesAreKnown)
+{
+    const std::vector<std::pair<MessageType, std::uint16_t>> types{
+        {MessageType::EnableLanTransferRequest, 40},
+        {MessageType::EnableLanTransferResponse, 41},
+        {MessageType::DisableLanTransferRequest, 42},
+        {MessageType::DisableLanTransferResponse, 43},
+        {MessageType::SetReceiveDirectoryRequest, 44},
+        {MessageType::SetReceiveDirectoryResponse, 45},
+        {MessageType::GetTransferStatusRequest, 46},
+        {MessageType::GetTransferStatusResponse, 47},
+    };
+
+    for (const auto& [type, wire] : types) {
+        EXPECT_TRUE(coredesk::protocol::is_known_message_type(type));
+        EXPECT_EQ(coredesk::protocol::message_type_to_wire(type), wire);
+        auto from_wire = coredesk::protocol::message_type_from_wire(wire);
+        ASSERT_TRUE(from_wire.ok()) << wire;
+        EXPECT_EQ(from_wire.value(), type);
+
+        const auto encoded = encode_or_fail(Frame{type, 0, wire, bytes_from_text("m7")});
+        FrameDecoder decoder;
+        auto decoded = decoder.push(encoded);
+        ASSERT_TRUE(decoded.ok()) << wire;
+        ASSERT_EQ(decoded.value().size(), 1U) << wire;
+        EXPECT_EQ(decoded.value()[0].type, type);
+        EXPECT_EQ(decoded.value()[0].request_id, wire);
+    }
+}
+
+TEST(FrameProtocolTest, ExistingMessageTypeWireValuesRemainStable)
+{
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::Ping), 1);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::Pong), 2);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::ScanRequest), 10);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::ScanAccepted), 11);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::ScanProgress), 12);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::ScanCompleted), 13);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::ScanFailed), 14);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::CancelScanRequest), 15);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::SearchRequest), 20);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::SearchResponse), 21);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::StatusRequest), 30);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::StatusResponse), 31);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::Hello), 100);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::HelloAck), 101);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileOffer), 110);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileAccept), 111);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileReject), 112);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileChunk), 113);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileFinish), 114);
+    EXPECT_EQ(coredesk::protocol::message_type_to_wire(MessageType::FileResult), 115);
 }

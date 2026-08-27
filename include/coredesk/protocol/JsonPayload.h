@@ -64,6 +64,37 @@ struct ErrorResponsePayload {
     std::string message;
 };
 
+struct EnableLanTransferRequestPayload {};
+
+struct EnableLanTransferResponsePayload {
+    bool success{false};
+    std::uint16_t port{};
+};
+
+struct DisableLanTransferRequestPayload {};
+
+struct DisableLanTransferResponsePayload {
+    bool success{false};
+};
+
+struct SetReceiveDirectoryRequestPayload {
+    std::string path;
+};
+
+struct SetReceiveDirectoryResponsePayload {
+    bool success{false};
+    std::string path;
+};
+
+struct GetTransferStatusRequestPayload {};
+
+struct GetTransferStatusResponsePayload {
+    bool enabled{false};
+    std::uint16_t port{};
+    std::string receive_directory;
+    std::uint64_t active_transfers{};
+};
+
 struct HelloPayload {
     std::uint32_t protocol_version{1};
     std::string node_name;
@@ -127,6 +158,38 @@ Result<SearchResponsePayload> decode_search_response_payload(std::span<const std
 
 Result<std::vector<std::byte>> encode_error_response_payload(const ErrorResponsePayload& payload);
 Result<ErrorResponsePayload> decode_error_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_enable_lan_transfer_request_payload(
+    const EnableLanTransferRequestPayload& payload);
+Result<EnableLanTransferRequestPayload> decode_enable_lan_transfer_request_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_enable_lan_transfer_response_payload(
+    const EnableLanTransferResponsePayload& payload);
+Result<EnableLanTransferResponsePayload> decode_enable_lan_transfer_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_disable_lan_transfer_request_payload(
+    const DisableLanTransferRequestPayload& payload);
+Result<DisableLanTransferRequestPayload> decode_disable_lan_transfer_request_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_disable_lan_transfer_response_payload(
+    const DisableLanTransferResponsePayload& payload);
+Result<DisableLanTransferResponsePayload> decode_disable_lan_transfer_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_set_receive_directory_request_payload(
+    const SetReceiveDirectoryRequestPayload& payload);
+Result<SetReceiveDirectoryRequestPayload> decode_set_receive_directory_request_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_set_receive_directory_response_payload(
+    const SetReceiveDirectoryResponsePayload& payload);
+Result<SetReceiveDirectoryResponsePayload> decode_set_receive_directory_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_get_transfer_status_request_payload(
+    const GetTransferStatusRequestPayload& payload);
+Result<GetTransferStatusRequestPayload> decode_get_transfer_status_request_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_get_transfer_status_response_payload(
+    const GetTransferStatusResponsePayload& payload);
+Result<GetTransferStatusResponsePayload> decode_get_transfer_status_response_payload(std::span<const std::byte> bytes);
 
 Result<std::vector<std::byte>> encode_hello_payload(const HelloPayload& payload);
 Result<HelloPayload> decode_hello_payload(std::span<const std::byte> bytes);

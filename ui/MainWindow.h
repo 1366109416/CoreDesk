@@ -18,6 +18,7 @@ class QTimer;
 namespace coredesk::ui {
 
 class SearchWidget;
+class TransferWidget;
 
 class MainWindow : public QMainWindow {
 public:
@@ -41,10 +42,12 @@ public:
     bool is_scanning() const noexcept;
     QString status_text() const;
     SearchWidget* search_widget() const noexcept;
+    TransferWidget* transfer_widget() const noexcept;
     void set_root_path(const QString& path);
     QString root_path() const;
     void set_latest_search_request_id_for_testing(RequestId request_id);
     void set_active_scan_request_id_for_testing(RequestId request_id);
+    void set_pending_transfer_request_id_for_testing(protocol::MessageType type, RequestId request_id);
 
 private:
     void build_ui();
@@ -54,6 +57,10 @@ private:
     void start_scan();
     void cancel_scan();
     void send_search(const QString& query);
+    void enable_lan_transfer();
+    void disable_lan_transfer();
+    void set_receive_directory(const QString& path);
+    void request_transfer_status();
     void attempt_connect();
     void start_service_process();
     QString service_executable_path() const;
@@ -66,6 +73,12 @@ private:
     void apply_scan_completed(const protocol::Frame& frame);
     void apply_scan_failed(const protocol::Frame& frame);
     void apply_error_payload(const protocol::Frame& frame);
+    void apply_enable_lan_transfer_response(const protocol::Frame& frame);
+    void apply_disable_lan_transfer_response(const protocol::Frame& frame);
+    void apply_set_receive_directory_response(const protocol::Frame& frame);
+    void apply_get_transfer_status_response(const protocol::Frame& frame);
+    bool apply_transfer_error(const protocol::Frame& frame);
+    void sync_transfer_status_after_operation();
 
     qt_ipc::LocalIpcClient client_;
     QLineEdit* root_path_edit_{};
@@ -75,6 +88,7 @@ private:
     QLabel* status_label_{};
     QTabWidget* tabs_{};
     SearchWidget* search_widget_{};
+    TransferWidget* transfer_widget_{};
     QTimer* retry_timer_{};
 
     ConnectionState connection_state_{ConnectionState::Disconnected};
@@ -83,6 +97,10 @@ private:
     QTime retry_deadline_;
     std::optional<RequestId> latest_search_request_id_;
     std::optional<RequestId> active_scan_request_id_;
+    std::optional<RequestId> pending_enable_transfer_request_id_;
+    std::optional<RequestId> pending_disable_transfer_request_id_;
+    std::optional<RequestId> pending_set_receive_directory_request_id_;
+    std::optional<RequestId> pending_transfer_status_request_id_;
     QString last_error_;
     std::uint64_t file_count_{0};
     std::uint64_t generation_{0};

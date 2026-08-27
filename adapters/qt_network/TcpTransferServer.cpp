@@ -143,6 +143,11 @@ quint16 TcpTransferServer::server_port() const
     return server_->serverPort();
 }
 
+std::uint64_t TcpTransferServer::active_transfer_count() const
+{
+    return active_transfer_ ? 1U : 0U;
+}
+
 void TcpTransferServer::handle_new_connection()
 {
     while (server_->hasPendingConnections()) {

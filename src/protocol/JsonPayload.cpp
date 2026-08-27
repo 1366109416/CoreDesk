@@ -183,6 +183,18 @@ Result<std::uint32_t> required_u32(const Json& json, std::string_view field)
     return Result<std::uint32_t>::success(static_cast<std::uint32_t>(value.value()));
 }
 
+Result<std::uint16_t> required_u16(const Json& json, std::string_view field)
+{
+    auto value = required_u64(json, field);
+    if (!value.ok()) {
+        return Result<std::uint16_t>::failure(value.error());
+    }
+    if (value.value() > static_cast<std::uint64_t>(std::numeric_limits<std::uint16_t>::max())) {
+        return Result<std::uint16_t>::failure({ErrorCode::InvalidArgument, "field is too large: " + std::string(field)});
+    }
+    return Result<std::uint16_t>::success(static_cast<std::uint16_t>(value.value()));
+}
+
 Result<std::size_t> required_size(const Json& json, std::string_view field)
 {
     auto value = required_u64(json, field);
@@ -238,6 +250,14 @@ Result<int> required_int(const Json& json, std::string_view field)
 bool is_valid_result_type(std::string_view type)
 {
     return type == "file" || type == "directory" || type == "symlink" || type == "other";
+}
+
+Result<void> validate_non_empty_path(std::string_view path)
+{
+    if (path.empty()) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "path must not be empty"});
+    }
+    return Result<void>::success();
 }
 
 std::string error_code_to_protocol(ErrorCode code)
@@ -628,6 +648,172 @@ Result<ErrorResponsePayload> decode_error_response_payload(std::span<const std::
         payload.code = code.value();
         payload.message = std::move(message).value();
         return Result<ErrorResponsePayload>::success(std::move(payload));
+    });
+}
+
+Result<std::vector<std::byte>> encode_enable_lan_transfer_request_payload(
+    const EnableLanTransferRequestPayload&)
+{
+    return dump_json(Json::object());
+}
+
+Result<EnableLanTransferRequestPayload> decode_enable_lan_transfer_request_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<EnableLanTransferRequestPayload>(bytes, [](const Json&) {
+        return Result<EnableLanTransferRequestPayload>::success({});
+    });
+}
+
+Result<std::vector<std::byte>> encode_enable_lan_transfer_response_payload(
+    const EnableLanTransferResponsePayload& payload)
+{
+    return dump_json(Json{{"success", payload.success}, {"port", payload.port}});
+}
+
+Result<EnableLanTransferResponsePayload> decode_enable_lan_transfer_response_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<EnableLanTransferResponsePayload>(bytes, [](const Json& json) {
+        auto success = required_bool(json, "success");
+        auto port = required_u16(json, "port");
+        if (!success.ok()) {
+            return Result<EnableLanTransferResponsePayload>::failure(success.error());
+        }
+        if (!port.ok()) {
+            return Result<EnableLanTransferResponsePayload>::failure(port.error());
+        }
+        return Result<EnableLanTransferResponsePayload>::success({success.value(), port.value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_disable_lan_transfer_request_payload(
+    const DisableLanTransferRequestPayload&)
+{
+    return dump_json(Json::object());
+}
+
+Result<DisableLanTransferRequestPayload> decode_disable_lan_transfer_request_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<DisableLanTransferRequestPayload>(bytes, [](const Json&) {
+        return Result<DisableLanTransferRequestPayload>::success({});
+    });
+}
+
+Result<std::vector<std::byte>> encode_disable_lan_transfer_response_payload(
+    const DisableLanTransferResponsePayload& payload)
+{
+    return dump_json(Json{{"success", payload.success}});
+}
+
+Result<DisableLanTransferResponsePayload> decode_disable_lan_transfer_response_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<DisableLanTransferResponsePayload>(bytes, [](const Json& json) {
+        auto success = required_bool(json, "success");
+        if (!success.ok()) {
+            return Result<DisableLanTransferResponsePayload>::failure(success.error());
+        }
+        return Result<DisableLanTransferResponsePayload>::success({success.value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_set_receive_directory_request_payload(
+    const SetReceiveDirectoryRequestPayload& payload)
+{
+    if (auto valid = validate_non_empty_path(payload.path); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"path", payload.path}});
+}
+
+Result<SetReceiveDirectoryRequestPayload> decode_set_receive_directory_request_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<SetReceiveDirectoryRequestPayload>(bytes, [](const Json& json) {
+        auto path = required_string(json, "path");
+        if (!path.ok()) {
+            return Result<SetReceiveDirectoryRequestPayload>::failure(path.error());
+        }
+        if (auto valid = validate_non_empty_path(path.value()); !valid.ok()) {
+            return Result<SetReceiveDirectoryRequestPayload>::failure(valid.error());
+        }
+        return Result<SetReceiveDirectoryRequestPayload>::success({std::move(path).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_set_receive_directory_response_payload(
+    const SetReceiveDirectoryResponsePayload& payload)
+{
+    if (auto valid = validate_non_empty_path(payload.path); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"success", payload.success}, {"path", payload.path}});
+}
+
+Result<SetReceiveDirectoryResponsePayload> decode_set_receive_directory_response_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<SetReceiveDirectoryResponsePayload>(bytes, [](const Json& json) {
+        auto success = required_bool(json, "success");
+        auto path = required_string(json, "path");
+        if (!success.ok()) {
+            return Result<SetReceiveDirectoryResponsePayload>::failure(success.error());
+        }
+        if (!path.ok()) {
+            return Result<SetReceiveDirectoryResponsePayload>::failure(path.error());
+        }
+        if (auto valid = validate_non_empty_path(path.value()); !valid.ok()) {
+            return Result<SetReceiveDirectoryResponsePayload>::failure(valid.error());
+        }
+        return Result<SetReceiveDirectoryResponsePayload>::success({success.value(), std::move(path).value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_get_transfer_status_request_payload(
+    const GetTransferStatusRequestPayload&)
+{
+    return dump_json(Json::object());
+}
+
+Result<GetTransferStatusRequestPayload> decode_get_transfer_status_request_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<GetTransferStatusRequestPayload>(bytes, [](const Json&) {
+        return Result<GetTransferStatusRequestPayload>::success({});
+    });
+}
+
+Result<std::vector<std::byte>> encode_get_transfer_status_response_payload(
+    const GetTransferStatusResponsePayload& payload)
+{
+    if (auto valid = validate_non_empty_path(payload.receive_directory); !valid.ok()) {
+        return Result<std::vector<std::byte>>::failure(valid.error());
+    }
+    return dump_json(Json{{"enabled", payload.enabled},
+                          {"port", payload.port},
+                          {"receive_directory", payload.receive_directory},
+                          {"active_transfers", payload.active_transfers}});
+}
+
+Result<GetTransferStatusResponsePayload> decode_get_transfer_status_response_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<GetTransferStatusResponsePayload>(bytes, [](const Json& json) {
+        auto enabled = required_bool(json, "enabled");
+        auto port = required_u16(json, "port");
+        auto receive_directory = required_string(json, "receive_directory");
+        auto active_transfers = required_u64(json, "active_transfers");
+        if (!enabled.ok()) {
+            return Result<GetTransferStatusResponsePayload>::failure(enabled.error());
+        }
+        if (!port.ok()) {
+            return Result<GetTransferStatusResponsePayload>::failure(port.error());
+        }
+        if (!receive_directory.ok()) {
+            return Result<GetTransferStatusResponsePayload>::failure(receive_directory.error());
+        }
+        if (!active_transfers.ok()) {
+            return Result<GetTransferStatusResponsePayload>::failure(active_transfers.error());
+        }
+        if (auto valid = validate_non_empty_path(receive_directory.value()); !valid.ok()) {
+            return Result<GetTransferStatusResponsePayload>::failure(valid.error());
+        }
+        return Result<GetTransferStatusResponsePayload>::success(
+            {enabled.value(), port.value(), std::move(receive_directory).value(), active_transfers.value()});
     });
 }
 

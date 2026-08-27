@@ -93,6 +93,14 @@ bool is_known_message_type(MessageType type) noexcept
     case MessageType::SearchResponse:
     case MessageType::StatusRequest:
     case MessageType::StatusResponse:
+    case MessageType::EnableLanTransferRequest:
+    case MessageType::EnableLanTransferResponse:
+    case MessageType::DisableLanTransferRequest:
+    case MessageType::DisableLanTransferResponse:
+    case MessageType::SetReceiveDirectoryRequest:
+    case MessageType::SetReceiveDirectoryResponse:
+    case MessageType::GetTransferStatusRequest:
+    case MessageType::GetTransferStatusResponse:
     case MessageType::Hello:
     case MessageType::HelloAck:
     case MessageType::FileOffer:

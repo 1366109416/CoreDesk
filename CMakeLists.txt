@@ -173,6 +173,7 @@ if(COREDESK_BUILD_UI)
         apps/desktop/main.cpp
         ui/MainWindow.cpp
         ui/SearchWidget.cpp
+        ui/TransferWidget.cpp
     )
     target_include_directories(coredesk_desktop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
     target_link_libraries(coredesk_desktop PRIVATE coredesk_qt_ipc Qt6::Widgets)
@@ -200,6 +201,7 @@ else()
 endif()
 
 if(COREDESK_BUILD_NETWORK)
+    target_sources(coredesk_service PRIVATE apps/service/transfer/TransferManager.cpp)
     target_link_libraries(coredesk_service PRIVATE coredesk_qt_network)
     target_compile_definitions(coredesk_service PRIVATE COREDESK_BUILD_NETWORK=1)
 endif()
@@ -262,7 +264,10 @@ if(COREDESK_BUILD_TESTS)
     )
     target_link_libraries(coredesk_integration_tests PRIVATE coredesk_common coredesk_protocol coredesk_service_lib coredesk_qt_ipc coredesk_qt_ipc_server Qt6::Core Qt6::Network GTest::gtest_main)
     if(COREDESK_BUILD_NETWORK)
+        target_sources(coredesk_integration_tests PRIVATE apps/service/transfer/TransferManager.cpp)
+        target_include_directories(coredesk_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps/service/transfer)
         target_link_libraries(coredesk_integration_tests PRIVATE coredesk_qt_network)
+        target_compile_definitions(coredesk_integration_tests PRIVATE COREDESK_BUILD_NETWORK=1)
     endif()
     target_compile_features(coredesk_integration_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_integration_tests)
@@ -281,6 +286,7 @@ if(COREDESK_BUILD_TESTS)
             tests/unit/test_desktop_ui.cpp
             ui/MainWindow.cpp
             ui/SearchWidget.cpp
+            ui/TransferWidget.cpp
         )
         target_include_directories(coredesk_desktop_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
         target_link_libraries(coredesk_desktop_tests PRIVATE coredesk_common coredesk_protocol coredesk_qt_ipc Qt6::Widgets GTest::gtest_main)

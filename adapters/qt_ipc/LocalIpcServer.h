@@ -3,11 +3,13 @@
 #include "coredesk/common/Result.h"
 #include "coredesk/concurrency/ThreadPool.h"
 #include "coredesk/protocol/FrameCodec.h"
+#include "coredesk/protocol/JsonPayload.h"
 #include "coredesk/service/ServiceController.h"
 
 #include <QObject>
 #include <QString>
 
+#include <functional>
 #include <memory>
 #include <unordered_map>
 
@@ -18,6 +20,15 @@ namespace coredesk::qt_ipc {
 
 inline constexpr const char* kLocalServerName = "CoreDesk.Service.v1";
 
+struct TransferManagementHandlers {
+    std::function<Result<protocol::EnableLanTransferResponsePayload>()> enable;
+    std::function<Result<protocol::DisableLanTransferResponsePayload>()> disable;
+    std::function<Result<protocol::SetReceiveDirectoryResponsePayload>(
+        const protocol::SetReceiveDirectoryRequestPayload&)>
+        set_receive_directory;
+    std::function<Result<protocol::GetTransferStatusResponsePayload>()> status;
+};
+
 class LocalIpcServer : public QObject {
 public:
     explicit LocalIpcServer(service::ServiceController& controller, QObject* parent = nullptr);
@@ -26,6 +37,7 @@ public:
     Result<void> listen(const QString& name = QString::fromLatin1(kLocalServerName));
     void close();
     bool is_listening() const;
+    void set_transfer_management_handlers(TransferManagementHandlers handlers);
 
 private:
     struct Connection {
@@ -38,6 +50,10 @@ private:
     void handle_disconnected(QLocalSocket* socket);
     void dispatch_frame(QLocalSocket* socket, const protocol::Frame& frame);
     void dispatch_search_request(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_enable_lan_transfer_request(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_disable_lan_transfer_request(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_set_receive_directory_request(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_get_transfer_status_request(QLocalSocket* socket, const protocol::Frame& frame);
     void send_frame(QLocalSocket* socket, protocol::Frame frame);
     void send_error(QLocalSocket* socket, protocol::MessageType type, RequestId request_id, const Error& error);
     void close_protocol_error(QLocalSocket* socket, const Error& error);
@@ -47,6 +63,7 @@ private:
     std::unique_ptr<QLocalServer> server_;
     std::unordered_map<QLocalSocket*, std::unique_ptr<Connection>> connections_;
     concurrency::ThreadPool search_pool_{2};
+    TransferManagementHandlers transfer_handlers_;
 };
 
 } // namespace coredesk::qt_ipc
