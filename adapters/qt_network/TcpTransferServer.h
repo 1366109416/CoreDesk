@@ -40,6 +40,7 @@ public:
     void close();
     bool is_listening() const;
     quint16 server_port() const;
+    std::uint64_t active_transfer_count() const;
 
 private:
     enum class ReceiveState {

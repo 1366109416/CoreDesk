@@ -376,3 +376,105 @@ TEST(JsonPayloadTest, FileChunkRejectsLengthMismatchAndOversizedPayload)
     ASSERT_FALSE(too_large.ok());
     EXPECT_EQ(too_large.error().code, ErrorCode::PayloadTooLarge);
 }
+
+TEST(JsonPayloadTest, TransferManagementEmptyRequestsRoundtrip)
+{
+    auto enable = encode_enable_lan_transfer_request_payload({});
+    ASSERT_TRUE(enable.ok());
+    auto decoded_enable = decode_enable_lan_transfer_request_payload(enable.value());
+    EXPECT_TRUE(decoded_enable.ok());
+
+    auto disable = encode_disable_lan_transfer_request_payload({});
+    ASSERT_TRUE(disable.ok());
+    auto decoded_disable = decode_disable_lan_transfer_request_payload(disable.value());
+    EXPECT_TRUE(decoded_disable.ok());
+
+    auto status = encode_get_transfer_status_request_payload({});
+    ASSERT_TRUE(status.ok());
+    auto decoded_status = decode_get_transfer_status_request_payload(status.value());
+    EXPECT_TRUE(decoded_status.ok());
+}
+
+TEST(JsonPayloadTest, TransferManagementResponsesRoundtrip)
+{
+    auto enable = encode_enable_lan_transfer_response_payload({true, 65535});
+    ASSERT_TRUE(enable.ok());
+    auto decoded_enable = decode_enable_lan_transfer_response_payload(enable.value());
+    ASSERT_TRUE(decoded_enable.ok());
+    EXPECT_TRUE(decoded_enable.value().success);
+    EXPECT_EQ(decoded_enable.value().port, 65535U);
+
+    auto disable = encode_disable_lan_transfer_response_payload({true});
+    ASSERT_TRUE(disable.ok());
+    auto decoded_disable = decode_disable_lan_transfer_response_payload(disable.value());
+    ASSERT_TRUE(decoded_disable.ok());
+    EXPECT_TRUE(decoded_disable.value().success);
+}
+
+TEST(JsonPayloadTest, SetReceiveDirectoryPayloadRoundtrip)
+{
+    SetReceiveDirectoryRequestPayload request{"D:/CoreDeskReceived"};
+    auto encoded_request = encode_set_receive_directory_request_payload(request);
+    ASSERT_TRUE(encoded_request.ok());
+    auto decoded_request = decode_set_receive_directory_request_payload(encoded_request.value());
+    ASSERT_TRUE(decoded_request.ok());
+    EXPECT_EQ(decoded_request.value().path, request.path);
+
+    SetReceiveDirectoryResponsePayload response{true, "D:/CoreDeskReceived"};
+    auto encoded_response = encode_set_receive_directory_response_payload(response);
+    ASSERT_TRUE(encoded_response.ok());
+    auto decoded_response = decode_set_receive_directory_response_payload(encoded_response.value());
+    ASSERT_TRUE(decoded_response.ok());
+    EXPECT_TRUE(decoded_response.value().success);
+    EXPECT_EQ(decoded_response.value().path, response.path);
+}
+
+TEST(JsonPayloadTest, SetReceiveDirectoryRejectsInvalidPathSchema)
+{
+    auto missing = decode_set_receive_directory_request_payload(bytes_from_text("{}"));
+    ASSERT_FALSE(missing.ok());
+    EXPECT_EQ(missing.error().code, ErrorCode::InvalidArgument);
+
+    auto wrong_type = decode_set_receive_directory_request_payload(bytes_from_text("{\"path\":42}"));
+    ASSERT_FALSE(wrong_type.ok());
+    EXPECT_EQ(wrong_type.error().code, ErrorCode::InvalidArgument);
+
+    auto empty = decode_set_receive_directory_request_payload(bytes_from_text("{\"path\":\"\"}"));
+    ASSERT_FALSE(empty.ok());
+    EXPECT_EQ(empty.error().code, ErrorCode::InvalidArgument);
+
+    auto malformed = decode_set_receive_directory_request_payload(bytes_from_text("{\"path\":"));
+    ASSERT_FALSE(malformed.ok());
+    EXPECT_EQ(malformed.error().code, ErrorCode::ProtocolError);
+}
+
+TEST(JsonPayloadTest, TransferStatusPayloadRoundtrip)
+{
+    GetTransferStatusResponsePayload payload{true, 65535, "D:/CoreDeskReceived", 1};
+    auto encoded = encode_get_transfer_status_response_payload(payload);
+    ASSERT_TRUE(encoded.ok());
+    auto decoded = decode_get_transfer_status_response_payload(encoded.value());
+    ASSERT_TRUE(decoded.ok());
+    EXPECT_TRUE(decoded.value().enabled);
+    EXPECT_EQ(decoded.value().port, 65535U);
+    EXPECT_EQ(decoded.value().receive_directory, payload.receive_directory);
+    EXPECT_EQ(decoded.value().active_transfers, 1U);
+}
+
+TEST(JsonPayloadTest, TransferStatusRejectsOutOfRangeNumbers)
+{
+    auto bad_port = decode_get_transfer_status_response_payload(
+        bytes_from_text("{\"enabled\":true,\"port\":65536,\"receive_directory\":\"D:/x\",\"active_transfers\":0}"));
+    ASSERT_FALSE(bad_port.ok());
+    EXPECT_EQ(bad_port.error().code, ErrorCode::InvalidArgument);
+
+    auto negative_active = decode_get_transfer_status_response_payload(
+        bytes_from_text("{\"enabled\":true,\"port\":1,\"receive_directory\":\"D:/x\",\"active_transfers\":-1}"));
+    ASSERT_FALSE(negative_active.ok());
+    EXPECT_EQ(negative_active.error().code, ErrorCode::InvalidArgument);
+
+    auto wrong_active_type = decode_get_transfer_status_response_payload(
+        bytes_from_text("{\"enabled\":true,\"port\":1,\"receive_directory\":\"D:/x\",\"active_transfers\":\"1\"}"));
+    ASSERT_FALSE(wrong_active_type.ok());
+    EXPECT_EQ(wrong_active_type.error().code, ErrorCode::InvalidArgument);
+}

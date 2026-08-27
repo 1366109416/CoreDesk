@@ -1,5 +1,6 @@
 #include "TcpTransferClient.h"
 #include "TcpTransferServer.h"
+#include "TransferManager.h"
 #include "coredesk/protocol/FrameCodec.h"
 #include "coredesk/protocol/JsonPayload.h"
 
@@ -40,6 +41,7 @@ using coredesk::protocol::FrameEncoder;
 using coredesk::protocol::MessageType;
 using coredesk::qt_network::TcpTransferClient;
 using coredesk::qt_network::TcpTransferServer;
+using coredesk::service::TransferManager;
 
 QCoreApplication& app()
 {
@@ -324,6 +326,98 @@ TEST(TcpTransferIntegrationTest, HelloHandshakeUsesFrameProtocolOverTcpLoopback)
 
     client.disconnect_from_host();
     server.close();
+}
+
+TEST(TcpTransferIntegrationTest, ReceiverActiveTransferCountReflectsRealState)
+{
+    app();
+    TempDirectory temp;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(temp.path());
+    ASSERT_EQ(server.active_transfer_count(), 0U);
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket socket;
+    FrameDecoder decoder;
+    std::vector<Frame> frames;
+    raw_handshake(socket, decoder, frames, server);
+
+    const auto data = bytes_from_string("active transfer");
+    const auto transfer_id = valid_transfer_id('c');
+    raw_offer(socket, decoder, frames, make_offer_for_data(transfer_id, "active-count.bin", data), 150);
+    EXPECT_EQ(server.active_transfer_count(), 1U);
+
+    socket.abort();
+    ASSERT_TRUE(wait_until([&]() {
+        return server.active_transfer_count() == 0U;
+    }));
+    server.close();
+}
+
+TEST(TcpTransferIntegrationTest, TransferManagerStartStopAndStatusAreIdempotent)
+{
+    app();
+    TempDirectory temp;
+    TransferManager manager;
+    ASSERT_FALSE(manager.enabled());
+
+    auto directory = manager.set_receive_directory(temp.path());
+    ASSERT_TRUE(directory.ok());
+    EXPECT_EQ(manager.receive_directory(), temp.path());
+
+    auto started = manager.start();
+    ASSERT_TRUE(started.ok());
+    EXPECT_TRUE(manager.enabled());
+    EXPECT_NE(manager.listening_port(), 0U);
+    EXPECT_EQ(manager.active_transfer_count(), 0U);
+
+    auto repeated = manager.start();
+    EXPECT_TRUE(repeated.ok());
+    EXPECT_TRUE(manager.enabled());
+
+    const auto status = manager.status();
+    EXPECT_TRUE(status.enabled);
+    EXPECT_EQ(status.port, manager.listening_port());
+    EXPECT_EQ(status.receive_directory, temp.path());
+    EXPECT_EQ(status.active_transfers, 0U);
+
+    manager.stop();
+    EXPECT_FALSE(manager.enabled());
+    manager.stop();
+    EXPECT_FALSE(manager.enabled());
+}
+
+TEST(TcpTransferIntegrationTest, TransferManagerReceiveDirectoryValidation)
+{
+    app();
+    TempDirectory first;
+    TempDirectory second;
+    TransferManager manager;
+
+    auto set_first = manager.set_receive_directory(first.path());
+    ASSERT_TRUE(set_first.ok());
+    EXPECT_EQ(manager.receive_directory(), first.path());
+
+    auto started = manager.start();
+    ASSERT_TRUE(started.ok());
+    auto busy = manager.set_receive_directory(second.path());
+    ASSERT_FALSE(busy.ok());
+    EXPECT_EQ(busy.error().code, ErrorCode::Busy);
+    EXPECT_EQ(manager.receive_directory(), first.path());
+
+    manager.stop();
+    const auto file_path = first.path() / "not-a-directory";
+    first.write_file("not-a-directory", "x");
+    auto invalid = manager.set_receive_directory(file_path);
+    ASSERT_FALSE(invalid.ok());
+    EXPECT_NE(invalid.error().code, ErrorCode::Ok);
+    EXPECT_EQ(manager.receive_directory(), first.path());
+
+    const auto nested = second.path() / "nested" / "receive";
+    auto set_nested = manager.set_receive_directory(nested);
+    ASSERT_TRUE(set_nested.ok());
+    EXPECT_EQ(manager.receive_directory(), nested);
+    EXPECT_TRUE(std::filesystem::is_directory(nested));
 }
 
 TEST(TcpTransferIntegrationTest, FileOfferAcceptedAfterHelloHandshake)

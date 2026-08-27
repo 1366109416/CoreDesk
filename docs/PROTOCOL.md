@@ -43,6 +43,14 @@ Message type values are fixed wire values and must not be renumbered.
 21   SearchResponse
 30   StatusRequest
 31   StatusResponse
+40   EnableLanTransferRequest
+41   EnableLanTransferResponse
+42   DisableLanTransferRequest
+43   DisableLanTransferResponse
+44   SetReceiveDirectoryRequest
+45   SetReceiveDirectoryResponse
+46   GetTransferStatusRequest
+47   GetTransferStatusResponse
 100  Hello
 101  HelloAck
 110  FileOffer
@@ -98,6 +106,86 @@ bytes for:
 
 Malformed JSON syntax maps to `ProtocolError`. Valid JSON that does not satisfy
 the expected schema maps to `InvalidArgument`.
+
+### Local IPC Transfer Management Payloads
+
+M7 adds local IPC management messages for the service-side LAN transfer
+receiver. These messages use the shared FrameProtocol and are separate from
+the TCP transfer wire messages in the `100+` range.
+
+`EnableLanTransferRequest`:
+
+```json
+{}
+```
+
+`EnableLanTransferResponse` success:
+
+```json
+{
+  "success": true,
+  "port": 45827
+}
+```
+
+`DisableLanTransferRequest`:
+
+```json
+{}
+```
+
+`DisableLanTransferResponse` success:
+
+```json
+{
+  "success": true
+}
+```
+
+`SetReceiveDirectoryRequest`:
+
+```json
+{
+  "path": "D:/CoreDeskReceived"
+}
+```
+
+`path` must be a non-empty UTF-8 string. Filesystem policy checks are performed
+by the service transfer manager.
+
+`SetReceiveDirectoryResponse` success:
+
+```json
+{
+  "success": true,
+  "path": "D:/CoreDeskReceived"
+}
+```
+
+`GetTransferStatusRequest`:
+
+```json
+{}
+```
+
+`GetTransferStatusResponse` success:
+
+```json
+{
+  "enabled": true,
+  "port": 45827,
+  "receive_directory": "D:/CoreDeskReceived",
+  "active_transfers": 0
+}
+```
+
+`active_transfers` is the real count exposed by the current
+`TcpTransferServer` single-active-receive model: `0` when no receive is active,
+and `1` while one receive is active.
+
+Failure responses reuse the existing `ErrorResponsePayload` schema and are sent
+with the matching response message type, for example
+`EnableLanTransferResponse` or `SetReceiveDirectoryResponse`.
 
 M6 adds protocol-layer helpers for LAN transfer control payloads. These helpers
 only validate wire/schema details; TCP sockets, filesystem writes, SHA-256

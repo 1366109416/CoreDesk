@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "SearchWidget.h"
+#include "TransferWidget.h"
 #include "coredesk/protocol/JsonPayload.h"
 
 #include <gtest/gtest.h>
@@ -19,8 +20,10 @@ using coredesk::protocol::ScanCompletedPayload;
 using coredesk::protocol::ScanProgressPayload;
 using coredesk::protocol::SearchResponsePayload;
 using coredesk::protocol::SearchResultPayload;
+using coredesk::protocol::GetTransferStatusResponsePayload;
 using coredesk::ui::MainWindow;
 using coredesk::ui::SearchWidget;
+using coredesk::ui::TransferWidget;
 
 QApplication& app()
 {
@@ -61,6 +64,21 @@ Frame search_frame(coredesk::RequestId request_id, std::string name)
     auto encoded = coredesk::protocol::encode_search_response_payload(payload);
     EXPECT_TRUE(encoded.ok());
     return Frame{MessageType::SearchResponse, 0, request_id, std::move(encoded).value()};
+}
+
+Frame transfer_status_frame(coredesk::RequestId request_id, GetTransferStatusResponsePayload payload)
+{
+    auto encoded = coredesk::protocol::encode_get_transfer_status_response_payload(payload);
+    EXPECT_TRUE(encoded.ok());
+    return Frame{MessageType::GetTransferStatusResponse, 0, request_id, std::move(encoded).value()};
+}
+
+Frame transfer_error_frame(MessageType type, coredesk::RequestId request_id, coredesk::ErrorCode code, std::string message)
+{
+    auto encoded = coredesk::protocol::encode_error_response_payload(
+        coredesk::protocol::ErrorResponsePayload{false, code, std::move(message)});
+    EXPECT_TRUE(encoded.ok());
+    return Frame{type, 0, request_id, std::move(encoded).value()};
 }
 
 } // namespace
@@ -117,6 +135,80 @@ TEST(SearchWidgetTest, RendersAtMostOneHundredRows)
     }
     widget.render_results(response);
     EXPECT_EQ(widget.result_row_count(), 100);
+}
+
+TEST(TransferWidgetTest, InitialOfflineStateDisablesActions)
+{
+    app();
+    TransferWidget widget;
+    EXPECT_EQ(widget.status_text(), QStringLiteral("Offline"));
+    EXPECT_FALSE(widget.enable_button_enabled());
+    EXPECT_FALSE(widget.disable_button_enabled());
+    EXPECT_FALSE(widget.choose_folder_button_enabled());
+}
+
+TEST(TransferWidgetTest, DisabledStatusEnablesEnableAndChooseFolder)
+{
+    app();
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{false, 0, "C:/receive", 0});
+
+    EXPECT_EQ(widget.status_text(), QStringLiteral("Disabled"));
+    EXPECT_EQ(widget.port_text(), QStringLiteral("-"));
+    EXPECT_EQ(widget.receive_directory_text(), QStringLiteral("C:/receive"));
+    EXPECT_EQ(widget.active_transfers_text(), QStringLiteral("0"));
+    EXPECT_TRUE(widget.enable_button_enabled());
+    EXPECT_FALSE(widget.disable_button_enabled());
+    EXPECT_TRUE(widget.choose_folder_button_enabled());
+}
+
+TEST(TransferWidgetTest, EnabledStatusEnablesOnlyDisable)
+{
+    app();
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{true, 45827, "C:/receive", 1});
+
+    EXPECT_EQ(widget.status_text(), QStringLiteral("Enabled"));
+    EXPECT_EQ(widget.port_text(), QStringLiteral("45827"));
+    EXPECT_EQ(widget.active_transfers_text(), QStringLiteral("1"));
+    EXPECT_FALSE(widget.enable_button_enabled());
+    EXPECT_TRUE(widget.disable_button_enabled());
+    EXPECT_FALSE(widget.choose_folder_button_enabled());
+}
+
+TEST(TransferWidgetTest, UnavailableStateDisablesActionsAndShowsError)
+{
+    app();
+    TransferWidget widget;
+    widget.set_unavailable_state(QStringLiteral("LAN transfer feature is unavailable in this build"));
+
+    EXPECT_EQ(widget.status_text(), QStringLiteral("Unavailable"));
+    EXPECT_FALSE(widget.enable_button_enabled());
+    EXPECT_FALSE(widget.disable_button_enabled());
+    EXPECT_FALSE(widget.choose_folder_button_enabled());
+    EXPECT_TRUE(widget.error_text().contains(QStringLiteral("unavailable")));
+}
+
+TEST(TransferWidgetTest, PendingStateDisablesActionsTemporarily)
+{
+    app();
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{false, 0, "C:/receive", 0});
+    ASSERT_TRUE(widget.enable_button_enabled());
+    ASSERT_TRUE(widget.choose_folder_button_enabled());
+
+    widget.set_pending(true);
+    EXPECT_FALSE(widget.enable_button_enabled());
+    EXPECT_FALSE(widget.disable_button_enabled());
+    EXPECT_FALSE(widget.choose_folder_button_enabled());
+}
+
+TEST(TransferWidgetTest, ErrorLabelDisplaysServiceError)
+{
+    app();
+    TransferWidget widget;
+    widget.show_error(QStringLiteral("permission denied"));
+    EXPECT_EQ(widget.error_text(), QStringLiteral("permission denied"));
 }
 
 TEST(MainWindowTest, StaleSearchResponseDoesNotOverwriteNewerQuery)
@@ -239,4 +331,56 @@ TEST(MainWindowTest, DisconnectInvalidatesPendingRequestsAndShowsOffline)
     window.handle_disconnected();
     EXPECT_EQ(window.connection_state(), MainWindow::ConnectionState::Offline);
     EXPECT_TRUE(window.status_text().contains(QStringLiteral("Offline")));
+}
+
+TEST(MainWindowTest, GetTransferStatusResponseUpdatesTransferWidget)
+{
+    app();
+    MainWindow window(false);
+    window.set_pending_transfer_request_id_for_testing(MessageType::GetTransferStatusResponse, 33);
+
+    window.handle_frame(transfer_status_frame(33, GetTransferStatusResponsePayload{true, 45827, "C:/receive", 1}));
+
+    EXPECT_EQ(window.transfer_widget()->status_text(), QStringLiteral("Enabled"));
+    EXPECT_EQ(window.transfer_widget()->port_text(), QStringLiteral("45827"));
+    EXPECT_EQ(window.transfer_widget()->receive_directory_text(), QStringLiteral("C:/receive"));
+    EXPECT_EQ(window.transfer_widget()->active_transfers_text(), QStringLiteral("1"));
+}
+
+TEST(MainWindowTest, TransferStatusRequestIdMismatchDoesNotUpdateWidget)
+{
+    app();
+    MainWindow window(false);
+    window.set_pending_transfer_request_id_for_testing(MessageType::GetTransferStatusResponse, 33);
+
+    window.handle_frame(transfer_status_frame(32, GetTransferStatusResponsePayload{true, 45827, "C:/receive", 1}));
+
+    EXPECT_EQ(window.transfer_widget()->status_text(), QStringLiteral("Offline"));
+}
+
+TEST(MainWindowTest, TransferUnavailableErrorShowsUnavailableState)
+{
+    app();
+    MainWindow window(false);
+    window.set_pending_transfer_request_id_for_testing(MessageType::GetTransferStatusResponse, 44);
+
+    window.handle_frame(transfer_error_frame(MessageType::GetTransferStatusResponse,
+                                            44,
+                                            coredesk::ErrorCode::ConnectionFailed,
+                                            "LAN transfer feature is unavailable in this build"));
+
+    EXPECT_EQ(window.transfer_widget()->status_text(), QStringLiteral("Unavailable"));
+    EXPECT_TRUE(window.transfer_widget()->error_text().contains(QStringLiteral("unavailable")));
+}
+
+TEST(MainWindowTest, DisconnectInvalidatesPendingTransferStatusResponse)
+{
+    app();
+    MainWindow window(false);
+    window.set_pending_transfer_request_id_for_testing(MessageType::GetTransferStatusResponse, 55);
+
+    window.handle_disconnected();
+    window.handle_frame(transfer_status_frame(55, GetTransferStatusResponsePayload{true, 45827, "C:/receive", 1}));
+
+    EXPECT_EQ(window.transfer_widget()->status_text(), QStringLiteral("Offline"));
 }

@@ -4,6 +4,10 @@
 #include "coredesk/protocol/JsonPayload.h"
 #include "coredesk/service/ServiceController.h"
 
+#ifdef COREDESK_BUILD_NETWORK
+#include "TransferManager.h"
+#endif
+
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
@@ -34,6 +38,10 @@ using coredesk::protocol::MessageType;
 using coredesk::qt_ipc::LocalIpcClient;
 using coredesk::qt_ipc::LocalIpcServer;
 using coredesk::service::ServiceController;
+
+#ifdef COREDESK_BUILD_NETWORK
+using coredesk::service::TransferManager;
+#endif
 
 QCoreApplication& app()
 {
@@ -121,6 +129,57 @@ Frame encode_then_decode_single(const std::vector<std::byte>& bytes)
     EXPECT_EQ(decoded.value().size(), 1U);
     return decoded.value()[0];
 }
+
+#ifdef COREDESK_BUILD_NETWORK
+std::string path_to_utf8_string(const std::filesystem::path& path)
+{
+    const auto text = path.u8string();
+    return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+}
+
+std::filesystem::path path_from_utf8_string(const std::string& text)
+{
+    std::u8string utf8;
+    utf8.reserve(text.size());
+    for (const unsigned char ch : text) {
+        utf8.push_back(static_cast<char8_t>(ch));
+    }
+    return std::filesystem::path(utf8);
+}
+
+coredesk::qt_ipc::TransferManagementHandlers transfer_handlers_for(TransferManager& manager)
+{
+    return coredesk::qt_ipc::TransferManagementHandlers{
+        [&manager]() -> coredesk::Result<coredesk::protocol::EnableLanTransferResponsePayload> {
+            auto started = manager.start();
+            if (!started.ok()) {
+                return coredesk::Result<coredesk::protocol::EnableLanTransferResponsePayload>::failure(started.error());
+            }
+            return coredesk::Result<coredesk::protocol::EnableLanTransferResponsePayload>::success(
+                {true, manager.listening_port()});
+        },
+        [&manager]() -> coredesk::Result<coredesk::protocol::DisableLanTransferResponsePayload> {
+            manager.stop();
+            return coredesk::Result<coredesk::protocol::DisableLanTransferResponsePayload>::success({true});
+        },
+        [&manager](
+            const coredesk::protocol::SetReceiveDirectoryRequestPayload& payload)
+            -> coredesk::Result<coredesk::protocol::SetReceiveDirectoryResponsePayload> {
+            auto updated = manager.set_receive_directory(path_from_utf8_string(payload.path));
+            if (!updated.ok()) {
+                return coredesk::Result<coredesk::protocol::SetReceiveDirectoryResponsePayload>::failure(updated.error());
+            }
+            return coredesk::Result<coredesk::protocol::SetReceiveDirectoryResponsePayload>::success(
+                {true, path_to_utf8_string(manager.receive_directory())});
+        },
+        [&manager]() -> coredesk::Result<coredesk::protocol::GetTransferStatusResponsePayload> {
+            const auto status = manager.status();
+            return coredesk::Result<coredesk::protocol::GetTransferStatusResponsePayload>::success(
+                {status.enabled, status.port, path_to_utf8_string(status.receive_directory), status.active_transfers});
+        }};
+}
+
+#endif
 
 } // namespace
 
@@ -398,3 +457,383 @@ TEST(LocalIpcIntegrationTest, ServerDestructionShutsDownActiveScanWithoutDanglin
 
     QLocalServer::removeServer(name);
 }
+
+#ifdef COREDESK_BUILD_NETWORK
+
+TEST(LocalIpcIntegrationTest, EnableLanTransferRequestEnablesManager)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto request_id = client.send_enable_lan_transfer_request();
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+
+    ASSERT_EQ(frames[0].type, MessageType::EnableLanTransferResponse);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto response = coredesk::protocol::decode_enable_lan_transfer_response_payload(frames[0].payload);
+    ASSERT_TRUE(response.ok());
+    EXPECT_TRUE(response.value().success);
+    EXPECT_EQ(response.value().port, manager.listening_port());
+    EXPECT_GT(response.value().port, 0U);
+    EXPECT_TRUE(manager.enabled());
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, RepeatedEnableIsIdempotent)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto first_id = client.send_enable_lan_transfer_request();
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 1;
+    }));
+    const auto first_port = manager.listening_port();
+
+    const auto second_id = client.send_enable_lan_transfer_request();
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 2;
+    }));
+
+    EXPECT_EQ(frames[0].request_id, first_id);
+    EXPECT_EQ(frames[1].request_id, second_id);
+    EXPECT_EQ(frames[0].type, MessageType::EnableLanTransferResponse);
+    EXPECT_EQ(frames[1].type, MessageType::EnableLanTransferResponse);
+    auto first = coredesk::protocol::decode_enable_lan_transfer_response_payload(frames[0].payload);
+    auto second = coredesk::protocol::decode_enable_lan_transfer_response_payload(frames[1].payload);
+    ASSERT_TRUE(first.ok());
+    ASSERT_TRUE(second.ok());
+    EXPECT_EQ(first.value().port, first_port);
+    EXPECT_EQ(second.value().port, first_port);
+    EXPECT_TRUE(manager.enabled());
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, DisableRepeatedDisableAndReenableAreIdempotent)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto enable_id = client.send_enable_lan_transfer_request();
+    const auto disable_id = client.send_disable_lan_transfer_request();
+    const auto second_disable_id = client.send_disable_lan_transfer_request();
+    const auto reenable_id = client.send_enable_lan_transfer_request();
+
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 4;
+    }));
+
+    EXPECT_EQ(frames[0].type, MessageType::EnableLanTransferResponse);
+    EXPECT_EQ(frames[0].request_id, enable_id);
+    EXPECT_EQ(frames[1].type, MessageType::DisableLanTransferResponse);
+    EXPECT_EQ(frames[1].request_id, disable_id);
+    EXPECT_EQ(frames[2].type, MessageType::DisableLanTransferResponse);
+    EXPECT_EQ(frames[2].request_id, second_disable_id);
+    EXPECT_EQ(frames[3].type, MessageType::EnableLanTransferResponse);
+    EXPECT_EQ(frames[3].request_id, reenable_id);
+    EXPECT_TRUE(manager.enabled());
+    EXPECT_GT(manager.listening_port(), 0U);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, GetTransferStatusReflectsManagerState)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto before_id = client.send_get_transfer_status_request();
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 1;
+    }));
+    ASSERT_EQ(frames[0].type, MessageType::GetTransferStatusResponse);
+    EXPECT_EQ(frames[0].request_id, before_id);
+    auto before = coredesk::protocol::decode_get_transfer_status_response_payload(frames[0].payload);
+    ASSERT_TRUE(before.ok());
+    EXPECT_FALSE(before.value().enabled);
+    EXPECT_EQ(before.value().port, 0U);
+    EXPECT_EQ(before.value().receive_directory, path_to_utf8_string(manager.receive_directory()));
+    EXPECT_EQ(before.value().active_transfers, 0U);
+
+    const auto enable_id = client.send_enable_lan_transfer_request();
+    const auto after_id = client.send_get_transfer_status_request();
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 3;
+    }));
+
+    EXPECT_EQ(frames[1].request_id, enable_id);
+    ASSERT_EQ(frames[2].type, MessageType::GetTransferStatusResponse);
+    EXPECT_EQ(frames[2].request_id, after_id);
+    auto after = coredesk::protocol::decode_get_transfer_status_response_payload(frames[2].payload);
+    ASSERT_TRUE(after.ok());
+    EXPECT_TRUE(after.value().enabled);
+    EXPECT_EQ(after.value().port, manager.listening_port());
+    EXPECT_EQ(after.value().receive_directory, path_to_utf8_string(manager.receive_directory()));
+    EXPECT_EQ(after.value().active_transfers, manager.active_transfer_count());
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, SetReceiveDirectoryWhileDisabledUpdatesManager)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+    TempDirectory temp;
+    const auto receive_dir = temp.path() / "receiver";
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto request_id =
+        client.send_set_receive_directory_request({path_to_utf8_string(receive_dir)});
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+
+    ASSERT_EQ(frames[0].type, MessageType::SetReceiveDirectoryResponse);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto response = coredesk::protocol::decode_set_receive_directory_response_payload(frames[0].payload);
+    ASSERT_TRUE(response.ok());
+    EXPECT_TRUE(response.value().success);
+    EXPECT_EQ(response.value().path, path_to_utf8_string(receive_dir));
+    EXPECT_EQ(manager.receive_directory(), receive_dir);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, SetReceiveDirectoryWhileEnabledReturnsBusy)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+    TempDirectory temp;
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    client.send_enable_lan_transfer_request();
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 1;
+    }));
+
+    const auto old_dir = manager.receive_directory();
+    const auto request_id =
+        client.send_set_receive_directory_request({path_to_utf8_string(temp.path() / "new_receiver")});
+    ASSERT_TRUE(wait_until([&] {
+        return frames.size() >= 2;
+    }));
+
+    ASSERT_EQ(frames[1].type, MessageType::SetReceiveDirectoryResponse);
+    EXPECT_EQ(frames[1].request_id, request_id);
+    auto error = coredesk::protocol::decode_error_response_payload(frames[1].payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::Busy);
+    EXPECT_EQ(manager.receive_directory(), old_dir);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, MalformedSetReceiveDirectoryPayloadReturnsTypedErrorResponse)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto encoded = coredesk::protocol::encode_disable_lan_transfer_request_payload({});
+    ASSERT_TRUE(encoded.ok());
+    const coredesk::RequestId request_id = 4242;
+    ASSERT_TRUE(client.send_frame(Frame{MessageType::SetReceiveDirectoryRequest, 0, request_id, encoded.value()}).ok());
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+
+    ASSERT_EQ(frames[0].type, MessageType::SetReceiveDirectoryResponse);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto error = coredesk::protocol::decode_error_response_payload(frames[0].payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::InvalidArgument);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, EmptyManagementPayloadWithWrongShapeReturnsErrorResponse)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const coredesk::RequestId request_id = 5151;
+    ASSERT_TRUE(client.send_frame(Frame{MessageType::EnableLanTransferRequest, 0, request_id, text_bytes("[]")}).ok());
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+
+    ASSERT_EQ(frames[0].type, MessageType::EnableLanTransferResponse);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto error = coredesk::protocol::decode_error_response_payload(frames[0].payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::InvalidArgument);
+    EXPECT_FALSE(manager.enabled());
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, LocalIpcDisconnectDoesNotStopLanReceiver)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    client.send_enable_lan_transfer_request();
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+    ASSERT_TRUE(manager.enabled());
+
+    client.disconnect_from_server();
+    ASSERT_TRUE(wait_until([&] {
+        return !client.is_connected();
+    }));
+    EXPECT_TRUE(manager.enabled());
+
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+#endif

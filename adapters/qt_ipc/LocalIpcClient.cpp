@@ -155,6 +155,62 @@ RequestId LocalIpcClient::send_search_request(const protocol::SearchRequestPaylo
     return request_id;
 }
 
+RequestId LocalIpcClient::send_enable_lan_transfer_request(const protocol::EnableLanTransferRequestPayload& payload)
+{
+    const auto request_id = next_request_id();
+    auto encoded = protocol::encode_enable_lan_transfer_request_payload(payload);
+    if (!encoded.ok()) {
+        if (error_callback_) {
+            error_callback_(encoded.error());
+        }
+        return request_id;
+    }
+    send_frame(protocol::Frame{protocol::MessageType::EnableLanTransferRequest, 0, request_id, std::move(encoded).value()});
+    return request_id;
+}
+
+RequestId LocalIpcClient::send_disable_lan_transfer_request(const protocol::DisableLanTransferRequestPayload& payload)
+{
+    const auto request_id = next_request_id();
+    auto encoded = protocol::encode_disable_lan_transfer_request_payload(payload);
+    if (!encoded.ok()) {
+        if (error_callback_) {
+            error_callback_(encoded.error());
+        }
+        return request_id;
+    }
+    send_frame(protocol::Frame{protocol::MessageType::DisableLanTransferRequest, 0, request_id, std::move(encoded).value()});
+    return request_id;
+}
+
+RequestId LocalIpcClient::send_set_receive_directory_request(const protocol::SetReceiveDirectoryRequestPayload& payload)
+{
+    const auto request_id = next_request_id();
+    auto encoded = protocol::encode_set_receive_directory_request_payload(payload);
+    if (!encoded.ok()) {
+        if (error_callback_) {
+            error_callback_(encoded.error());
+        }
+        return request_id;
+    }
+    send_frame(protocol::Frame{protocol::MessageType::SetReceiveDirectoryRequest, 0, request_id, std::move(encoded).value()});
+    return request_id;
+}
+
+RequestId LocalIpcClient::send_get_transfer_status_request(const protocol::GetTransferStatusRequestPayload& payload)
+{
+    const auto request_id = next_request_id();
+    auto encoded = protocol::encode_get_transfer_status_request_payload(payload);
+    if (!encoded.ok()) {
+        if (error_callback_) {
+            error_callback_(encoded.error());
+        }
+        return request_id;
+    }
+    send_frame(protocol::Frame{protocol::MessageType::GetTransferStatusRequest, 0, request_id, std::move(encoded).value()});
+    return request_id;
+}
+
 Result<void> LocalIpcClient::send_frame(protocol::Frame frame)
 {
     auto encoded = protocol::FrameEncoder::encode(frame);

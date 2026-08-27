@@ -63,21 +63,21 @@ Desktop UI
     |
 LocalIpcServer
     |
+TransferManagementHandlers
+    |
 TransferManager
     |
-    +----------------------+
-    |                      |
-    v                      v
-TcpTransferServer   TcpTransferClient
+TcpTransferServer
 ```
 
 Responsibilities:
 
 -   Desktop communicates only through Local IPC.
 -   LocalIpcServer handles IPC protocol.
+-   LocalIpcServer reaches transfer management through injected handlers.
 -   TransferManager manages transfer lifecycle.
 -   TcpTransferServer handles receiving files.
--   TcpTransferClient handles sending files.
+-   TcpTransferClient desktop send workflow is not part of M7.
 
 ------------------------------------------------------------------------
 
@@ -93,7 +93,6 @@ Responsibilities:
 -   Stop TCP transfer service.
 -   Configure receive directory.
 -   Manage TcpTransferServer lifecycle.
--   Manage TcpTransferClient lifecycle.
 -   Provide transfer status information.
 
 TransferManager belongs to Qt service composition layer.
@@ -150,19 +149,36 @@ It should not own TCP transfer components.
 
 M7 extends Local IPC protocol.
 
-New commands:
+Message type is carried by FrameProtocol. Payloads do not include an
+additional `"type"` routing field.
+
+Fixed wire values:
+
+``` text
+40 EnableLanTransferRequest
+41 EnableLanTransferResponse
+42 DisableLanTransferRequest
+43 DisableLanTransferResponse
+44 SetReceiveDirectoryRequest
+45 SetReceiveDirectoryResponse
+46 GetTransferStatusRequest
+47 GetTransferStatusResponse
+```
+
+Failures use the matching response MessageType plus the existing
+ErrorResponsePayload schema.
+
+New requests:
 
 ### EnableLanTransfer
 
 Request:
 
 ``` json
-{
-    "type": "EnableLanTransfer"
-}
+{}
 ```
 
-Response:
+Success response:
 
 ``` json
 {
@@ -176,12 +192,10 @@ Response:
 Request:
 
 ``` json
-{
-    "type": "DisableLanTransfer"
-}
+{}
 ```
 
-Response:
+Success response:
 
 ``` json
 {
@@ -195,16 +209,16 @@ Request:
 
 ``` json
 {
-    "type": "SetReceiveDirectory",
     "path": "D:/CoreDeskReceived"
 }
 ```
 
-Response:
+Success response:
 
 ``` json
 {
-    "success": true
+    "success": true,
+    "path": "D:/CoreDeskReceived"
 }
 ```
 
@@ -213,19 +227,22 @@ Response:
 Request:
 
 ``` json
-{
-    "type": "GetTransferStatus"
-}
+{}
 ```
 
-Response:
+Success response:
 
 ``` json
 {
     "enabled": true,
-    "activeTransfers": 0
+    "port": 45827,
+    "receive_directory": "D:/CoreDeskReceived",
+    "active_transfers": 0
 }
 ```
+
+`active_transfers` reflects the current single-active-receive model:
+`0` when no receive is active and `1` while one receive is active.
 
 ------------------------------------------------------------------------
 
@@ -240,20 +257,23 @@ ServiceController
         |
 LocalIpcServer
         |
+TransferManagementHandlers
+        |
 TransferManager
         |
- +----------------+
- |                |
- v                v
-TcpTransferServer TcpTransferClient
+TcpTransferServer
 ```
 
 Rules:
 
 -   Service main composition root owns TransferManager.
--   TransferManager owns TCP adapters.
+-   TransferManager owns TcpTransferServer.
 -   ServiceController does not know TCP exists.
 -   Desktop communicates through IPC only.
+-   Desktop exit does not disable the LAN receiver.
+-   Local IPC disconnect does not disable the LAN receiver.
+-   When COREDESK_BUILD_NETWORK is OFF, transfer management requests return an
+    unavailable/error response instead of using TCP adapters.
 
 ------------------------------------------------------------------------
 
@@ -269,10 +289,10 @@ CoreDeskReceived
 
 M7 introduces user configuration.
 
-Future flow:
+Flow:
 
 ``` text
-Desktop Settings
+Desktop LAN Transfer controls
         |
        IPC
         |
@@ -291,10 +311,10 @@ Step 1: Extend IPC protocol.
 
 Add:
 
--   EnableLanTransfer
--   DisableLanTransfer
--   SetReceiveDirectory
--   GetTransferStatus
+-   EnableLanTransferRequest / EnableLanTransferResponse
+-   DisableLanTransferRequest / DisableLanTransferResponse
+-   SetReceiveDirectoryRequest / SetReceiveDirectoryResponse
+-   GetTransferStatusRequest / GetTransferStatusResponse
 
 Step 2: Create TransferManager.
 
@@ -309,6 +329,7 @@ Provide:
 -   start()
 -   stop()
 -   status()
+-   set_receive_directory()
 
 Step 4: Connect LocalIpcServer with TransferManager.
 
@@ -331,6 +352,9 @@ M7 does not include:
 -   Modify ServiceController.
 -   Add third-party dependency.
 -   Move Qt dependency into core modules.
+-   Desktop TcpTransferClient send workflow.
+-   Device discovery.
+-   Transfer history or persistent settings.
 
 ------------------------------------------------------------------------
 
@@ -345,11 +369,10 @@ Desktop
     |
  TransferManager
     |
- +----------------+
- |                |
- v                v
-TCP Receiver   TCP Sender
+TCP Receiver
 ```
 
 The system will provide a complete user-controlled LAN transfer workflow
 while preserving existing core / adapter architecture boundaries.
+The service starts with LAN transfer disabled; TCP listening starts only after
+EnableLanTransferRequest succeeds.

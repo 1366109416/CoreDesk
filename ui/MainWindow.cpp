@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "SearchWidget.h"
+#include "TransferWidget.h"
 #include "coredesk/protocol/JsonPayload.h"
 
 #include <QCoreApplication>
@@ -101,6 +102,18 @@ void MainWindow::handle_frame(const protocol::Frame& frame)
     case protocol::MessageType::SearchResponse:
         apply_search_response(frame);
         return;
+    case protocol::MessageType::EnableLanTransferResponse:
+        apply_enable_lan_transfer_response(frame);
+        return;
+    case protocol::MessageType::DisableLanTransferResponse:
+        apply_disable_lan_transfer_response(frame);
+        return;
+    case protocol::MessageType::SetReceiveDirectoryResponse:
+        apply_set_receive_directory_response(frame);
+        return;
+    case protocol::MessageType::GetTransferStatusResponse:
+        apply_get_transfer_status_response(frame);
+        return;
     default:
         return;
     }
@@ -111,6 +124,7 @@ void MainWindow::handle_connected()
     retry_timer_->stop();
     last_error_.clear();
     set_connection_state(ConnectionState::Connected);
+    request_transfer_status();
 }
 
 void MainWindow::handle_disconnected()
@@ -122,6 +136,7 @@ void MainWindow::handle_disconnected()
     retry_timer_->stop();
     invalidate_pending_requests();
     set_scan_active(false);
+    transfer_widget_->set_offline_state();
     set_connection_state(ConnectionState::Offline);
 }
 
@@ -164,6 +179,11 @@ SearchWidget* MainWindow::search_widget() const noexcept
     return search_widget_;
 }
 
+TransferWidget* MainWindow::transfer_widget() const noexcept
+{
+    return transfer_widget_;
+}
+
 void MainWindow::set_root_path(const QString& path)
 {
     root_path_edit_->setText(path);
@@ -182,6 +202,26 @@ void MainWindow::set_latest_search_request_id_for_testing(RequestId request_id)
 void MainWindow::set_active_scan_request_id_for_testing(RequestId request_id)
 {
     active_scan_request_id_ = request_id;
+}
+
+void MainWindow::set_pending_transfer_request_id_for_testing(protocol::MessageType type, RequestId request_id)
+{
+    switch (type) {
+    case protocol::MessageType::EnableLanTransferResponse:
+        pending_enable_transfer_request_id_ = request_id;
+        break;
+    case protocol::MessageType::DisableLanTransferResponse:
+        pending_disable_transfer_request_id_ = request_id;
+        break;
+    case protocol::MessageType::SetReceiveDirectoryResponse:
+        pending_set_receive_directory_request_id_ = request_id;
+        break;
+    case protocol::MessageType::GetTransferStatusResponse:
+        pending_transfer_status_request_id_ = request_id;
+        break;
+    default:
+        break;
+    }
 }
 
 void MainWindow::build_ui()
@@ -215,11 +255,8 @@ void MainWindow::build_ui()
     tabs_ = new QTabWidget(central);
     search_widget_ = new SearchWidget(tabs_);
     tabs_->addTab(search_widget_, QStringLiteral("Search"));
-    auto* transfer_placeholder = new QWidget(tabs_);
-    auto* transfer_layout = new QVBoxLayout(transfer_placeholder);
-    transfer_layout->addWidget(new QLabel(QStringLiteral("LAN Transfer will be implemented in M6"), transfer_placeholder));
-    transfer_layout->addStretch(1);
-    tabs_->addTab(transfer_placeholder, QStringLiteral("LAN Transfer"));
+    transfer_widget_ = new TransferWidget(tabs_);
+    tabs_->addTab(transfer_widget_, QStringLiteral("LAN Transfer"));
     main_layout->addWidget(tabs_, 1);
 
     setCentralWidget(central);
@@ -244,6 +281,15 @@ void MainWindow::wire_callbacks()
     });
     search_widget_->set_query_changed_callback([this](const QString&) {
         latest_search_request_id_.reset();
+    });
+    transfer_widget_->set_enable_requested_callback([this]() {
+        enable_lan_transfer();
+    });
+    transfer_widget_->set_disable_requested_callback([this]() {
+        disable_lan_transfer();
+    });
+    transfer_widget_->set_receive_directory_selected_callback([this](const QString& path) {
+        set_receive_directory(path);
     });
     client_.set_frame_callback([this](const protocol::Frame& frame) {
         handle_frame(frame);
@@ -319,6 +365,53 @@ void MainWindow::send_search(const QString& query)
     latest_search_request_id_ = client_.send_search_request(protocol::SearchRequestPayload{utf8_string(query), 100});
 }
 
+void MainWindow::enable_lan_transfer()
+{
+    if (!client_.is_connected()) {
+        transfer_widget_->set_offline_state();
+        last_error_ = QStringLiteral("CoreDesk service is offline.");
+        set_connection_state(ConnectionState::Offline);
+        return;
+    }
+    transfer_widget_->set_pending(true);
+    pending_enable_transfer_request_id_ = client_.send_enable_lan_transfer_request();
+}
+
+void MainWindow::disable_lan_transfer()
+{
+    if (!client_.is_connected()) {
+        transfer_widget_->set_offline_state();
+        last_error_ = QStringLiteral("CoreDesk service is offline.");
+        set_connection_state(ConnectionState::Offline);
+        return;
+    }
+    transfer_widget_->set_pending(true);
+    pending_disable_transfer_request_id_ = client_.send_disable_lan_transfer_request();
+}
+
+void MainWindow::set_receive_directory(const QString& path)
+{
+    if (!client_.is_connected()) {
+        transfer_widget_->set_offline_state();
+        last_error_ = QStringLiteral("CoreDesk service is offline.");
+        set_connection_state(ConnectionState::Offline);
+        return;
+    }
+    transfer_widget_->set_pending(true);
+    pending_set_receive_directory_request_id_ =
+        client_.send_set_receive_directory_request(protocol::SetReceiveDirectoryRequestPayload{utf8_string(path)});
+}
+
+void MainWindow::request_transfer_status()
+{
+    if (!client_.is_connected()) {
+        transfer_widget_->set_offline_state();
+        return;
+    }
+    transfer_widget_->set_pending(true);
+    pending_transfer_status_request_id_ = client_.send_get_transfer_status_request();
+}
+
 void MainWindow::attempt_connect()
 {
     client_.connect_to_server_async(QStringLiteral("CoreDesk.Service.v1"));
@@ -362,6 +455,10 @@ void MainWindow::invalidate_pending_requests()
 {
     latest_search_request_id_.reset();
     active_scan_request_id_.reset();
+    pending_enable_transfer_request_id_.reset();
+    pending_disable_transfer_request_id_.reset();
+    pending_set_receive_directory_request_id_.reset();
+    pending_transfer_status_request_id_.reset();
 }
 
 void MainWindow::update_status_line()
@@ -443,6 +540,97 @@ void MainWindow::apply_error_payload(const protocol::Frame& frame)
     if (error.ok()) {
         last_error_ = QString::fromStdString(error.value().message);
         update_status_line();
+    }
+}
+
+void MainWindow::apply_enable_lan_transfer_response(const protocol::Frame& frame)
+{
+    if (!pending_enable_transfer_request_id_ || frame.request_id != *pending_enable_transfer_request_id_) {
+        return;
+    }
+    pending_enable_transfer_request_id_.reset();
+
+    auto decoded = protocol::decode_enable_lan_transfer_response_payload(frame.payload);
+    if (!decoded.ok() && !apply_transfer_error(frame)) {
+        transfer_widget_->show_error(QString::fromStdString(decoded.error().message));
+    }
+    sync_transfer_status_after_operation();
+}
+
+void MainWindow::apply_disable_lan_transfer_response(const protocol::Frame& frame)
+{
+    if (!pending_disable_transfer_request_id_ || frame.request_id != *pending_disable_transfer_request_id_) {
+        return;
+    }
+    pending_disable_transfer_request_id_.reset();
+
+    auto decoded = protocol::decode_disable_lan_transfer_response_payload(frame.payload);
+    if (!decoded.ok() && !apply_transfer_error(frame)) {
+        transfer_widget_->show_error(QString::fromStdString(decoded.error().message));
+    }
+    sync_transfer_status_after_operation();
+}
+
+void MainWindow::apply_set_receive_directory_response(const protocol::Frame& frame)
+{
+    if (!pending_set_receive_directory_request_id_ ||
+        frame.request_id != *pending_set_receive_directory_request_id_) {
+        return;
+    }
+    pending_set_receive_directory_request_id_.reset();
+
+    auto decoded = protocol::decode_set_receive_directory_response_payload(frame.payload);
+    if (!decoded.ok() && !apply_transfer_error(frame)) {
+        transfer_widget_->show_error(QString::fromStdString(decoded.error().message));
+    }
+    sync_transfer_status_after_operation();
+}
+
+void MainWindow::apply_get_transfer_status_response(const protocol::Frame& frame)
+{
+    if (!pending_transfer_status_request_id_ || frame.request_id != *pending_transfer_status_request_id_) {
+        return;
+    }
+    pending_transfer_status_request_id_.reset();
+
+    auto decoded = protocol::decode_get_transfer_status_response_payload(frame.payload);
+    if (decoded.ok()) {
+        transfer_widget_->set_transfer_status(decoded.value());
+        transfer_widget_->set_pending(false);
+        return;
+    }
+    if (!apply_transfer_error(frame)) {
+        transfer_widget_->show_error(QString::fromStdString(decoded.error().message));
+    }
+    transfer_widget_->set_pending(false);
+}
+
+bool MainWindow::apply_transfer_error(const protocol::Frame& frame)
+{
+    auto error = protocol::decode_error_response_payload(frame.payload);
+    if (!error.ok()) {
+        return false;
+    }
+
+    const auto message = QString::fromStdString(error.value().message);
+    if (error.value().code == ErrorCode::ConnectionFailed &&
+        message.contains(QStringLiteral("LAN transfer"), Qt::CaseInsensitive) &&
+        message.contains(QStringLiteral("unavailable"), Qt::CaseInsensitive)) {
+        transfer_widget_->set_unavailable_state(message);
+    } else {
+        transfer_widget_->show_error(message);
+    }
+    last_error_ = message;
+    update_status_line();
+    return true;
+}
+
+void MainWindow::sync_transfer_status_after_operation()
+{
+    if (client_.is_connected()) {
+        request_transfer_status();
+    } else {
+        transfer_widget_->set_offline_state();
     }
 }
 

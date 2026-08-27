@@ -38,6 +38,10 @@ public:
     RequestId send_scan_request(const protocol::ScanRequestPayload& payload);
     RequestId send_cancel_scan();
     RequestId send_search_request(const protocol::SearchRequestPayload& payload);
+    RequestId send_enable_lan_transfer_request(const protocol::EnableLanTransferRequestPayload& payload = {});
+    RequestId send_disable_lan_transfer_request(const protocol::DisableLanTransferRequestPayload& payload = {});
+    RequestId send_set_receive_directory_request(const protocol::SetReceiveDirectoryRequestPayload& payload);
+    RequestId send_get_transfer_status_request(const protocol::GetTransferStatusRequestPayload& payload = {});
     Result<void> send_frame(protocol::Frame frame);
 
 private:

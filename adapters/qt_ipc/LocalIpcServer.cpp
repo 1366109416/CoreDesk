@@ -43,6 +43,11 @@ Error invalid_request(std::string message)
     return {ErrorCode::InvalidArgument, std::move(message)};
 }
 
+Error transfer_unavailable()
+{
+    return {ErrorCode::ConnectionFailed, "LAN transfer feature is unavailable in this build"};
+}
+
 } // namespace
 
 LocalIpcServer::LocalIpcServer(service::ServiceController& controller, QObject* parent)
@@ -107,6 +112,11 @@ void LocalIpcServer::close()
 bool LocalIpcServer::is_listening() const
 {
     return server_->isListening();
+}
+
+void LocalIpcServer::set_transfer_management_handlers(TransferManagementHandlers handlers)
+{
+    transfer_handlers_ = std::move(handlers);
 }
 
 void LocalIpcServer::handle_new_connection()
@@ -230,8 +240,24 @@ void LocalIpcServer::dispatch_frame(QLocalSocket* socket, const protocol::Frame&
         return;
     }
 
+    case protocol::MessageType::EnableLanTransferRequest:
+        dispatch_enable_lan_transfer_request(socket, frame);
+        return;
+
+    case protocol::MessageType::DisableLanTransferRequest:
+        dispatch_disable_lan_transfer_request(socket, frame);
+        return;
+
+    case protocol::MessageType::SetReceiveDirectoryRequest:
+        dispatch_set_receive_directory_request(socket, frame);
+        return;
+
+    case protocol::MessageType::GetTransferStatusRequest:
+        dispatch_get_transfer_status_request(socket, frame);
+        return;
+
     default:
-        send_error(socket, frame.type, frame.request_id, invalid_request("message type is not supported in M4"));
+        send_error(socket, frame.type, frame.request_id, invalid_request("message type is not supported"));
         return;
     }
 }
@@ -281,6 +307,126 @@ void LocalIpcServer::dispatch_search_request(QLocalSocket* socket, const protoco
                    request_id,
                    {ErrorCode::Cancelled, "search executor is shutting down"});
     }
+}
+
+void LocalIpcServer::dispatch_enable_lan_transfer_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_enable_lan_transfer_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::EnableLanTransferResponse, frame.request_id, payload.error());
+        return;
+    }
+    if (!transfer_handlers_.enable) {
+        send_error(socket, protocol::MessageType::EnableLanTransferResponse, frame.request_id, transfer_unavailable());
+        return;
+    }
+
+    auto response = transfer_handlers_.enable();
+    if (!response.ok()) {
+        send_error(socket, protocol::MessageType::EnableLanTransferResponse, frame.request_id, response.error());
+        return;
+    }
+
+    auto encoded = protocol::encode_enable_lan_transfer_response_payload(response.value());
+    if (!encoded.ok()) {
+        send_error(socket, protocol::MessageType::EnableLanTransferResponse, frame.request_id, encoded.error());
+        return;
+    }
+    send_frame(socket,
+               protocol::Frame{protocol::MessageType::EnableLanTransferResponse,
+                               0,
+                               frame.request_id,
+                               std::move(encoded).value()});
+}
+
+void LocalIpcServer::dispatch_disable_lan_transfer_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_disable_lan_transfer_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::DisableLanTransferResponse, frame.request_id, payload.error());
+        return;
+    }
+    if (!transfer_handlers_.disable) {
+        send_error(socket, protocol::MessageType::DisableLanTransferResponse, frame.request_id, transfer_unavailable());
+        return;
+    }
+
+    auto response = transfer_handlers_.disable();
+    if (!response.ok()) {
+        send_error(socket, protocol::MessageType::DisableLanTransferResponse, frame.request_id, response.error());
+        return;
+    }
+
+    auto encoded = protocol::encode_disable_lan_transfer_response_payload(response.value());
+    if (!encoded.ok()) {
+        send_error(socket, protocol::MessageType::DisableLanTransferResponse, frame.request_id, encoded.error());
+        return;
+    }
+    send_frame(socket,
+               protocol::Frame{protocol::MessageType::DisableLanTransferResponse,
+                               0,
+                               frame.request_id,
+                               std::move(encoded).value()});
+}
+
+void LocalIpcServer::dispatch_set_receive_directory_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_set_receive_directory_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::SetReceiveDirectoryResponse, frame.request_id, payload.error());
+        return;
+    }
+    if (!transfer_handlers_.set_receive_directory) {
+        send_error(socket, protocol::MessageType::SetReceiveDirectoryResponse, frame.request_id, transfer_unavailable());
+        return;
+    }
+
+    auto response = transfer_handlers_.set_receive_directory(payload.value());
+    if (!response.ok()) {
+        send_error(socket, protocol::MessageType::SetReceiveDirectoryResponse, frame.request_id, response.error());
+        return;
+    }
+
+    auto encoded = protocol::encode_set_receive_directory_response_payload(response.value());
+    if (!encoded.ok()) {
+        send_error(socket, protocol::MessageType::SetReceiveDirectoryResponse, frame.request_id, encoded.error());
+        return;
+    }
+    send_frame(socket,
+               protocol::Frame{protocol::MessageType::SetReceiveDirectoryResponse,
+                               0,
+                               frame.request_id,
+                               std::move(encoded).value()});
+}
+
+void LocalIpcServer::dispatch_get_transfer_status_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_get_transfer_status_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::GetTransferStatusResponse, frame.request_id, payload.error());
+        return;
+    }
+    if (!transfer_handlers_.status) {
+        send_error(socket, protocol::MessageType::GetTransferStatusResponse, frame.request_id, transfer_unavailable());
+        return;
+    }
+
+    auto response = transfer_handlers_.status();
+    if (!response.ok()) {
+        send_error(socket, protocol::MessageType::GetTransferStatusResponse, frame.request_id, response.error());
+        return;
+    }
+
+    auto encoded = protocol::encode_get_transfer_status_response_payload(response.value());
+    if (!encoded.ok()) {
+        send_error(socket, protocol::MessageType::GetTransferStatusResponse, frame.request_id, encoded.error());
+        return;
+    }
+    send_frame(socket,
+               protocol::Frame{protocol::MessageType::GetTransferStatusResponse,
+                               0,
+                               frame.request_id,
+                               std::move(encoded).value()});
 }
 
 void LocalIpcServer::send_frame(QLocalSocket* socket, protocol::Frame frame)
