@@ -1,6 +1,7 @@
 #pragma once
 
 #include "coredesk/common/Result.h"
+#include "coredesk/common/Logger.h"
 #include "coredesk/concurrency/ThreadPool.h"
 #include "coredesk/protocol/FrameCodec.h"
 #include "coredesk/protocol/JsonPayload.h"
@@ -37,6 +38,7 @@ public:
     Result<void> listen(const QString& name = QString::fromLatin1(kLocalServerName));
     void close();
     bool is_listening() const;
+    void set_logger(Logger* logger) noexcept;
     void set_transfer_management_handlers(TransferManagementHandlers handlers);
 
 private:
@@ -64,6 +66,7 @@ private:
     std::unordered_map<QLocalSocket*, std::unique_ptr<Connection>> connections_;
     concurrency::ThreadPool search_pool_{2};
     TransferManagementHandlers transfer_handlers_;
+    Logger* logger_{};
 };
 
 } // namespace coredesk::qt_ipc

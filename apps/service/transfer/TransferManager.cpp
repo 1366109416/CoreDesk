@@ -58,6 +58,11 @@ TransferManager::~TransferManager()
     stop();
 }
 
+void TransferManager::set_logger(Logger* logger) noexcept
+{
+    tcp_server_.set_logger(logger);
+}
+
 
 Result<void> TransferManager::start()
 {

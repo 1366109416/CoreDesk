@@ -6,11 +6,14 @@
 #include <QCryptographicHash>
 #include <QFile>
 #include <QIODevice>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <QTimer>
 
 #include <cstddef>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -148,6 +151,11 @@ std::uint64_t TcpTransferServer::active_transfer_count() const
     return active_transfer_ ? 1U : 0U;
 }
 
+void TcpTransferServer::set_logger(Logger* logger) noexcept
+{
+    logger_ = logger;
+}
+
 void TcpTransferServer::handle_new_connection()
 {
     while (server_->hasPendingConnections()) {
@@ -155,12 +163,18 @@ void TcpTransferServer::handle_new_connection()
         auto connection = std::make_unique<Connection>();
         connection->socket = socket;
         connections_.emplace(socket, std::move(connection));
+        if (logger_) {
+            logger_->log(LogLevel::Info, "network", "connection established");
+        }
 
         QObject::connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
             handle_ready_read(socket);
         });
         QObject::connect(socket, &QTcpSocket::disconnected, this, [this, socket]() {
             handle_disconnected(socket);
+        });
+        QObject::connect(socket, &QTcpSocket::bytesWritten, this, [this, socket](qint64) {
+            handle_bytes_written(socket);
         });
     }
 }
@@ -190,14 +204,25 @@ void TcpTransferServer::handle_ready_read(QTcpSocket* socket)
 
 void TcpTransferServer::handle_disconnected(QTcpSocket* socket)
 {
+    if (logger_) {
+        logger_->log(LogLevel::Info, "network", "connection disconnected");
+    }
     remove_connection(socket);
     socket->deleteLater();
 }
 
 void TcpTransferServer::dispatch_frame(QTcpSocket* socket, const protocol::Frame& frame)
 {
+    const auto connection = connections_.find(socket);
+    if (connection == connections_.end()) {
+        return;
+    }
     if (frame.type == protocol::MessageType::Hello) {
         handle_hello(socket, frame);
+        return;
+    }
+    if (!connection->second->hello_complete) {
+        close_protocol_error(socket);
         return;
     }
     if (frame.type == protocol::MessageType::FileOffer) {
@@ -217,6 +242,11 @@ void TcpTransferServer::dispatch_frame(QTcpSocket* socket, const protocol::Frame
 
 void TcpTransferServer::handle_hello(QTcpSocket* socket, const protocol::Frame& frame)
 {
+    const auto connection = connections_.find(socket);
+    if (connection == connections_.end() || connection->second->hello_complete) {
+        close_protocol_error(socket);
+        return;
+    }
     auto hello = protocol::decode_hello_payload(frame.payload);
     if (!hello.ok()) {
         close_protocol_error(socket);
@@ -228,6 +258,7 @@ void TcpTransferServer::handle_hello(QTcpSocket* socket, const protocol::Frame& 
         close_protocol_error(socket);
         return;
     }
+    connection->second->hello_complete = true;
     send_frame(socket, protocol::Frame{protocol::MessageType::HelloAck, 0, frame.request_id, std::move(payload).value()});
 }
 
@@ -237,6 +268,13 @@ void TcpTransferServer::handle_file_offer(QTcpSocket* socket, const protocol::Fr
     if (!offer.ok()) {
         send_file_reject(socket, frame.request_id, unknown_transfer_id(), offer.error().code, offer.error().message);
         return;
+    }
+
+    if (logger_) {
+        std::ostringstream message;
+        message << "offer request_id=" << frame.request_id << " transfer_id=" << offer.value().transfer_id
+                << " byte_count=" << offer.value().file_size;
+        logger_->log(LogLevel::Info, "network", message.str());
     }
 
     auto valid = validate_offer_target(offer.value());
@@ -265,17 +303,40 @@ void TcpTransferServer::handle_file_offer(QTcpSocket* socket, const protocol::Fr
         return;
     }
     send_frame(socket, protocol::Frame{protocol::MessageType::FileAccept, 0, frame.request_id, std::move(payload).value()});
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "network",
+                     "accept request_id=" + std::to_string(frame.request_id) + " transfer_id=" +
+                         offer.value().transfer_id);
+    }
 }
 
 void TcpTransferServer::handle_file_chunk(QTcpSocket* socket, const protocol::Frame& frame)
 {
     auto chunk = protocol::decode_file_chunk_payload(frame.payload);
     if (!chunk.ok()) {
-        fail_receive(socket, frame.request_id, chunk.error().code, chunk.error().message);
+        if (active_transfer_ && active_transfer_->socket == socket) {
+            fail_receive(socket, frame.request_id, chunk.error().code, chunk.error().message);
+        } else {
+            reject_connection_receive(socket,
+                                      frame.request_id,
+                                      unknown_transfer_id(),
+                                      chunk.error().code,
+                                      chunk.error().message);
+        }
         return;
     }
 
-    if (!active_transfer_ || active_transfer_->socket != socket || chunk.value().transfer_id != active_transfer_->transfer_id) {
+    if (!active_transfer_ || active_transfer_->socket != socket) {
+        reject_connection_receive(socket,
+                                  frame.request_id,
+                                  chunk.value().transfer_id,
+                                  ErrorCode::InvalidArgument,
+                                  "socket does not own the active transfer");
+        return;
+    }
+    if (chunk.value().transfer_id != active_transfer_->transfer_id ||
+        (active_transfer_->state != ReceiveState::Accepted && active_transfer_->state != ReceiveState::Receiving)) {
         fail_receive(socket, frame.request_id, ErrorCode::InvalidArgument, "transfer_id does not match active transfer");
         return;
     }
@@ -311,10 +372,33 @@ void TcpTransferServer::handle_file_finish(QTcpSocket* socket, const protocol::F
 {
     auto finish = protocol::decode_file_finish_payload(frame.payload);
     if (!finish.ok()) {
-        fail_receive(socket, frame.request_id, finish.error().code, finish.error().message);
+        if (active_transfer_ && active_transfer_->socket == socket) {
+            fail_receive(socket, frame.request_id, finish.error().code, finish.error().message);
+        } else {
+            reject_connection_receive(socket,
+                                      frame.request_id,
+                                      unknown_transfer_id(),
+                                      finish.error().code,
+                                      finish.error().message);
+        }
         return;
     }
-    if (!active_transfer_ || active_transfer_->socket != socket || finish.value().transfer_id != active_transfer_->transfer_id) {
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "network",
+                     "finish request_id=" + std::to_string(frame.request_id) + " transfer_id=" +
+                         finish.value().transfer_id);
+    }
+    if (!active_transfer_ || active_transfer_->socket != socket) {
+        reject_connection_receive(socket,
+                                  frame.request_id,
+                                  finish.value().transfer_id,
+                                  ErrorCode::InvalidArgument,
+                                  "socket does not own the active transfer");
+        return;
+    }
+    if (finish.value().transfer_id != active_transfer_->transfer_id ||
+        (active_transfer_->state != ReceiveState::Accepted && active_transfer_->state != ReceiveState::Receiving)) {
         fail_receive(socket, frame.request_id, ErrorCode::InvalidArgument, "transfer_id does not match active transfer");
         return;
     }
@@ -409,14 +493,35 @@ void TcpTransferServer::complete_receive(QTcpSocket* socket, RequestId request_i
     }
 
     send_file_result(socket, request_id, transfer_id, true, ErrorCode::Ok, {});
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "network",
+                     "transfer success request_id=" + std::to_string(request_id) + " transfer_id=" + transfer_id);
+    }
     cleanup_active_transfer(false);
 }
 
 void TcpTransferServer::fail_receive(QTcpSocket* socket, RequestId request_id, ErrorCode code, std::string message)
 {
     const auto transfer_id = active_transfer_ ? active_transfer_->transfer_id : unknown_transfer_id();
+    if (logger_) {
+        logger_->log(LogLevel::Error,
+                     "network",
+                     "transfer fail request_id=" + std::to_string(request_id) + " transfer_id=" + transfer_id +
+                         " error_code=" + std::string(to_string(code)) + " message=" + message);
+    }
     send_file_result(socket, request_id, transfer_id, false, code, std::move(message));
     cleanup_active_transfer(true);
+}
+
+void TcpTransferServer::reject_connection_receive(QTcpSocket* socket,
+                                                  RequestId request_id,
+                                                  std::string transfer_id,
+                                                  ErrorCode code,
+                                                  std::string message)
+{
+    send_file_result(socket, request_id, std::move(transfer_id), false, code, std::move(message));
+    disconnect_after_pending_write(socket);
 }
 
 void TcpTransferServer::cleanup_active_transfer(bool remove_part)
@@ -434,17 +539,121 @@ void TcpTransferServer::cleanup_active_transfer(bool remove_part)
     }
 }
 
-void TcpTransferServer::send_frame(QTcpSocket* socket, protocol::Frame frame)
+bool TcpTransferServer::send_frame(QTcpSocket* socket, protocol::Frame frame)
+{
+    const auto connection = connections_.find(socket);
+    if (!socket || connection == connections_.end()) {
+        return false;
+    }
+    if (!connection->second->write_remainder.isEmpty()) {
+        handle_send_failure(socket);
+        return false;
+    }
+    auto encoded = protocol::FrameEncoder::encode(frame);
+    if (!encoded.ok()) {
+        handle_send_failure(socket);
+        return false;
+    }
+    const auto bytes = qbytearray_from_bytes(encoded.value());
+    const auto available = kPendingControlWriteLimit - socket->bytesToWrite();
+    if (available < 0 || bytes.size() > available) {
+        handle_send_failure(socket);
+        return false;
+    }
+    const auto accepted = socket->write(bytes);
+    if (accepted < 0) {
+        handle_send_failure(socket);
+        return false;
+    }
+    if (accepted < bytes.size()) {
+        connection->second->write_remainder = bytes.mid(accepted);
+        schedule_remainder_flush(socket);
+    }
+    return true;
+}
+
+void TcpTransferServer::handle_bytes_written(QTcpSocket* socket)
+{
+    const auto connection = connections_.find(socket);
+    if (connection == connections_.end()) {
+        return;
+    }
+    if (!connection->second->write_remainder.isEmpty()) {
+        schedule_remainder_flush(socket);
+    } else if (connection->second->disconnect_after_write) {
+        socket->disconnectFromHost();
+    }
+}
+
+void TcpTransferServer::schedule_remainder_flush(QTcpSocket* socket)
+{
+    const auto connection = connections_.find(socket);
+    if (connection == connections_.end() || connection->second->write_remainder.isEmpty() ||
+        connection->second->remainder_flush_scheduled) {
+        return;
+    }
+    connection->second->remainder_flush_scheduled = true;
+    const QPointer<QTcpSocket> guard(socket);
+    QTimer::singleShot(1, this, [this, guard]() {
+        if (guard) {
+            flush_write_remainder(guard);
+        }
+    });
+}
+
+void TcpTransferServer::flush_write_remainder(QTcpSocket* socket)
+{
+    const auto connection = connections_.find(socket);
+    if (connection == connections_.end()) {
+        return;
+    }
+    connection->second->remainder_flush_scheduled = false;
+    if (connection->second->write_remainder.isEmpty()) {
+        if (connection->second->disconnect_after_write) {
+            socket->disconnectFromHost();
+        }
+        return;
+    }
+    if (socket->state() != QAbstractSocket::ConnectedState) {
+        handle_send_failure(socket);
+        return;
+    }
+
+    const auto accepted = socket->write(connection->second->write_remainder);
+    if (accepted < 0) {
+        handle_send_failure(socket);
+        return;
+    }
+    if (accepted > 0) {
+        connection->second->write_remainder.remove(0, accepted);
+    }
+    if (!connection->second->write_remainder.isEmpty()) {
+        schedule_remainder_flush(socket);
+    } else if (connection->second->disconnect_after_write) {
+        socket->disconnectFromHost();
+    }
+}
+
+void TcpTransferServer::handle_send_failure(QTcpSocket* socket)
 {
     if (!socket || !connections_.contains(socket)) {
         return;
     }
-    auto encoded = protocol::FrameEncoder::encode(frame);
-    if (!encoded.ok()) {
-        close_protocol_error(socket);
+    remove_connection(socket);
+    socket->abort();
+}
+
+void TcpTransferServer::disconnect_after_pending_write(QTcpSocket* socket)
+{
+    const auto connection = connections_.find(socket);
+    if (!socket || connection == connections_.end()) {
         return;
     }
-    socket->write(qbytearray_from_bytes(encoded.value()));
+    if (connection->second->write_remainder.isEmpty()) {
+        socket->disconnectFromHost();
+    } else {
+        connection->second->disconnect_after_write = true;
+    }
 }
 
 void TcpTransferServer::send_file_reject(QTcpSocket* socket,
@@ -453,6 +662,12 @@ void TcpTransferServer::send_file_reject(QTcpSocket* socket,
                                          ErrorCode code,
                                          std::string message)
 {
+    if (logger_) {
+        logger_->log(LogLevel::Warning,
+                     "network",
+                     "reject request_id=" + std::to_string(request_id) + " transfer_id=" + transfer_id +
+                         " error_code=" + std::string(to_string(code)) + " message=" + message);
+    }
     auto payload = protocol::encode_file_reject_payload(protocol::FileRejectPayload{std::move(transfer_id), code, std::move(message)});
     if (!payload.ok()) {
         close_protocol_error(socket);
@@ -479,6 +694,9 @@ void TcpTransferServer::send_file_result(QTcpSocket* socket,
 
 void TcpTransferServer::close_protocol_error(QTcpSocket* socket)
 {
+    if (logger_) {
+        logger_->log(LogLevel::Error, "network", "protocol parse error error_code=ProtocolError");
+    }
     remove_connection(socket);
     if (socket) {
         socket->disconnectFromHost();

@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <exception>
 #include <span>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -114,6 +115,11 @@ bool LocalIpcServer::is_listening() const
     return server_->isListening();
 }
 
+void LocalIpcServer::set_logger(Logger* logger) noexcept
+{
+    logger_ = logger;
+}
+
 void LocalIpcServer::set_transfer_management_handlers(TransferManagementHandlers handlers)
 {
     transfer_handlers_ = std::move(handlers);
@@ -126,6 +132,10 @@ void LocalIpcServer::handle_new_connection()
         auto connection = std::make_unique<Connection>();
         connection->socket = socket;
         connections_.emplace(socket, std::move(connection));
+
+        if (logger_) {
+            logger_->log(LogLevel::Info, "ipc", "client connected");
+        }
 
         QObject::connect(socket, &QLocalSocket::readyRead, this, [this, socket]() {
             handle_ready_read(socket);
@@ -160,6 +170,9 @@ void LocalIpcServer::handle_ready_read(QLocalSocket* socket)
 
 void LocalIpcServer::handle_disconnected(QLocalSocket* socket)
 {
+    if (logger_) {
+        logger_->log(LogLevel::Info, "ipc", "client disconnected");
+    }
     remove_connection(socket);
     socket->deleteLater();
 }
@@ -447,6 +460,12 @@ void LocalIpcServer::send_error(QLocalSocket* socket,
                                 RequestId request_id,
                                 const Error& error)
 {
+    if (logger_) {
+        std::ostringstream message;
+        message << "response error request_id=" << request_id << " error_code=" << to_string(error.code)
+                << " message=" << error.message;
+        logger_->log(LogLevel::Error, "ipc", message.str());
+    }
     auto payload = protocol::encode_error_response_payload(protocol::ErrorResponsePayload{false, error.code, error.message});
     if (!payload.ok()) {
         close_protocol_error(socket, payload.error());
@@ -457,6 +476,12 @@ void LocalIpcServer::send_error(QLocalSocket* socket,
 
 void LocalIpcServer::close_protocol_error(QLocalSocket* socket, const Error& error)
 {
+    if (logger_) {
+        logger_->log(LogLevel::Error,
+                     "ipc",
+                     "protocol parse error error_code=" + std::string(to_string(error.code)) +
+                         " message=" + error.message);
+    }
     send_error(socket, protocol::MessageType::Pong, 0, error);
     remove_connection(socket);
     if (socket) {

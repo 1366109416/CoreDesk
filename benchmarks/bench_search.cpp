@@ -172,6 +172,7 @@ int main()
               << "tokens: " << snapshot->sorted_tokens.size() << '\n'
               << "postings: " << posting_count(*snapshot) << '\n'
               << "build_us: " << build_elapsed.count() << '\n'
+              << "query_iterations: " << kIterations << '\n'
               << "linear_check_count: " << linear_check_count << '\n'
               << "indexed_check_hits: " << indexed_check_hits << '\n'
               << "linear_avg_us: " << as_microseconds(average(baseline)) << '\n'

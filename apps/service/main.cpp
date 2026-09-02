@@ -1,4 +1,5 @@
 #include "LocalIpcServer.h"
+#include "coredesk/common/Logger.h"
 #include "coredesk/service/ServiceController.h"
 
 #ifdef COREDESK_BUILD_NETWORK
@@ -6,10 +7,34 @@
 #endif
 
 #include <QCoreApplication>
+#include <QStandardPaths>
 
 #include <filesystem>
 #include <iostream>
 #include <string>
+
+namespace {
+
+std::filesystem::path path_from_qstring(const QString& text)
+{
+#ifdef _WIN32
+    return std::filesystem::path(text.toStdWString());
+#else
+    return std::filesystem::path(text.toStdString());
+#endif
+}
+
+std::filesystem::path service_log_path()
+{
+    const auto override_path = qEnvironmentVariable("COREDESK_LOG_FILE");
+    if (!override_path.isEmpty()) {
+        return path_from_qstring(override_path);
+    }
+    return path_from_qstring(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)) /
+        "logs" / "coredesk_service.log";
+}
+
+} // namespace
 
 #ifdef COREDESK_BUILD_NETWORK
 namespace {
@@ -37,13 +62,24 @@ int main(int argc, char** argv)
 {
     QCoreApplication app(argc, argv);
 
+    coredesk::Logger logger;
+    const auto logger_opened = logger.open(service_log_path());
+    if (!logger_opened.ok()) {
+        std::cerr << "coredesk_service logger unavailable: " << coredesk::to_string(logger_opened.error().code)
+                  << " " << logger_opened.error().message << '\n';
+    }
+    logger.log(coredesk::LogLevel::Info, "service", "Service starting");
+
     coredesk::service::ServiceController controller;
+    controller.set_logger(&logger);
 
 #ifdef COREDESK_BUILD_NETWORK
     coredesk::service::TransferManager transfer_manager;
+    transfer_manager.set_logger(&logger);
 #endif
 
     coredesk::qt_ipc::LocalIpcServer server(controller);
+    server.set_logger(&logger);
 
 #ifdef COREDESK_BUILD_NETWORK
     server.set_transfer_management_handlers(coredesk::qt_ipc::TransferManagementHandlers{
@@ -81,11 +117,26 @@ int main(int argc, char** argv)
 
     auto listen_result = server.listen();
     if (!listen_result.ok()) {
+        logger.log(coredesk::LogLevel::Error,
+                   "service",
+                   "Service start failed error_code=" + std::string(coredesk::to_string(listen_result.error().code)) +
+                       " message=" + listen_result.error().message);
         std::cerr << "coredesk_service failed to listen: "
                   << coredesk::to_string(listen_result.error().code) << " "
                   << listen_result.error().message << '\n';
         return 2;
     }
 
-    return QCoreApplication::exec();
+    logger.log(coredesk::LogLevel::Info, "service", "Service started");
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, [&logger]() {
+        logger.log(coredesk::LogLevel::Info, "service", "Service stopping");
+    });
+    const auto exit_code = QCoreApplication::exec();
+    server.close();
+#ifdef COREDESK_BUILD_NETWORK
+    transfer_manager.stop();
+#endif
+    controller.shutdown();
+    logger.log(coredesk::LogLevel::Info, "service", "Service stopped");
+    return exit_code;
 }

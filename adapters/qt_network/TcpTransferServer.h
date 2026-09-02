@@ -1,11 +1,13 @@
 #pragma once
 
+#include "coredesk/common/Logger.h"
 #include "coredesk/common/Result.h"
 #include "coredesk/protocol/FrameCodec.h"
 #include "coredesk/protocol/JsonPayload.h"
 
 #include <QHostAddress>
 #include <QObject>
+#include <QByteArray>
 #include <QString>
 
 #include <filesystem>
@@ -41,8 +43,11 @@ public:
     bool is_listening() const;
     quint16 server_port() const;
     std::uint64_t active_transfer_count() const;
+    void set_logger(Logger* logger) noexcept;
 
 private:
+    static constexpr qint64 kPendingControlWriteLimit = 256 * 1024;
+
     enum class ReceiveState {
         Idle,
         Accepted,
@@ -67,6 +72,10 @@ private:
     struct Connection {
         QTcpSocket* socket{};
         protocol::FrameDecoder decoder;
+        bool hello_complete{false};
+        QByteArray write_remainder;
+        bool remainder_flush_scheduled{false};
+        bool disconnect_after_write{false};
     };
 
     void handle_new_connection();
@@ -81,8 +90,18 @@ private:
     Result<void> begin_receive(QTcpSocket* socket, RequestId request_id, const protocol::FileOfferPayload& offer);
     void complete_receive(QTcpSocket* socket, RequestId request_id);
     void fail_receive(QTcpSocket* socket, RequestId request_id, ErrorCode code, std::string message);
+    void reject_connection_receive(QTcpSocket* socket,
+                                   RequestId request_id,
+                                   std::string transfer_id,
+                                   ErrorCode code,
+                                   std::string message);
     void cleanup_active_transfer(bool remove_part);
-    void send_frame(QTcpSocket* socket, protocol::Frame frame);
+    bool send_frame(QTcpSocket* socket, protocol::Frame frame);
+    void handle_bytes_written(QTcpSocket* socket);
+    void schedule_remainder_flush(QTcpSocket* socket);
+    void flush_write_remainder(QTcpSocket* socket);
+    void handle_send_failure(QTcpSocket* socket);
+    void disconnect_after_pending_write(QTcpSocket* socket);
     void send_file_reject(QTcpSocket* socket,
                           RequestId request_id,
                           std::string transfer_id,
@@ -102,6 +121,7 @@ private:
     std::optional<ActiveTransfer> active_transfer_;
     std::unique_ptr<QTcpServer> server_;
     std::unordered_map<QTcpSocket*, std::unique_ptr<Connection>> connections_;
+    Logger* logger_{};
 };
 
 } // namespace coredesk::qt_network

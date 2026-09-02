@@ -69,3 +69,7 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Local benchmark datasets and raw evidence
+benchmark-data/
+benchmark-results/
