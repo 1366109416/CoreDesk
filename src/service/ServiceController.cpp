@@ -7,6 +7,7 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -16,6 +17,12 @@ namespace {
 Error make_error(ErrorCode code, std::string message)
 {
     return {code, std::move(message)};
+}
+
+std::string path_text(const std::filesystem::path& path)
+{
+    const auto utf8 = path.u8string();
+    return std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size());
 }
 
 std::int64_t file_time_to_ms(const std::filesystem::file_time_type& time)
@@ -49,6 +56,11 @@ ServiceController::~ServiceController()
     shutdown();
 }
 
+void ServiceController::set_logger(Logger* logger) noexcept
+{
+    logger_ = logger;
+}
+
 Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
                                                   const protocol::ScanRequestPayload& payload,
                                                   ProgressCallback progress,
@@ -77,6 +89,13 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
     auto root = std::filesystem::path(payload.root);
     auto token = cancellation.token();
 
+    if (logger_) {
+        std::ostringstream message;
+        message << "scan started request_id=" << request_id << " root=" << path_text(root)
+                << " worker_count=" << options.worker_count;
+        logger_->log(LogLevel::Info, "scanner", message.str());
+    }
+
     scan_thread_ = std::thread([this,
                                 request_id,
                                 scan_id,
@@ -103,6 +122,13 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
             });
 
             if (!scan_result.ok()) {
+                if (logger_) {
+                    logger_->log(LogLevel::Error,
+                                 "scanner",
+                                 "scan failed request_id=" + std::to_string(request_id) + " error_code=" +
+                                     std::string(to_string(scan_result.error().code)) + " message=" +
+                                     scan_result.error().message);
+                }
                 finish_scan_state(false);
                 complete_scan(request_id,
                               completed,
@@ -110,9 +136,27 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
                 return;
             }
 
+            const auto scan_stats = scan_result.value().stats;
+            const auto scan_elapsed = scan_result.value().elapsed;
+            if (logger_) {
+                std::ostringstream message;
+                message << "scan complete request_id=" << request_id << " processed=" << scan_stats.processed
+                        << " failed=" << scan_stats.failed << " skipped=" << scan_stats.skipped
+                        << " elapsed_ms=" << scan_elapsed.count();
+                logger_->log(LogLevel::Info, "scanner", message.str());
+            }
+
             index::IndexBuilder builder;
+            const auto index_started = std::chrono::steady_clock::now();
             auto build_result = builder.build(next_generation_, std::move(scan_result).value(), token);
             if (!build_result.ok()) {
+                if (logger_) {
+                    logger_->log(LogLevel::Error,
+                                 "index",
+                                 "index build failed request_id=" + std::to_string(request_id) + " error_code=" +
+                                     std::string(to_string(build_result.error().code)) + " message=" +
+                                     build_result.error().message);
+                }
                 finish_scan_state(false);
                 complete_scan(request_id,
                               completed,
@@ -122,6 +166,8 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
 
             const auto file_count = static_cast<std::uint64_t>(build_result.value()->records.size());
             const auto generation = build_result.value()->generation;
+            const auto index_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - index_started);
             {
                 std::unique_lock lock(snapshot_mutex_);
                 current_snapshot_ = build_result.value();
@@ -129,6 +175,13 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
             }
             search_engine_.clear_cache();
             finish_scan_state(true);
+
+            if (logger_) {
+                std::ostringstream message;
+                message << "index installed generation=" << generation << " record_count=" << file_count
+                        << " elapsed_ms=" << index_elapsed.count();
+                logger_->log(LogLevel::Info, "index", message.str());
+            }
 
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - scan_started);
@@ -140,12 +193,24 @@ Result<ScanStarted> ServiceController::start_scan(RequestId request_id,
                                                              file_count,
                                                              static_cast<std::uint64_t>(elapsed.count())}));
         } catch (const std::exception& ex) {
+            if (logger_) {
+                logger_->log(LogLevel::Error,
+                             "scanner",
+                             "scan failed request_id=" + std::to_string(request_id) +
+                                 " error_code=InternalError message=" + ex.what());
+            }
             finish_scan_state(false);
             complete_scan(request_id,
                           completed,
                           Result<protocol::ScanCompletedPayload>::failure(
                               make_error(ErrorCode::InternalError, ex.what())));
         } catch (...) {
+            if (logger_) {
+                logger_->log(LogLevel::Error,
+                             "scanner",
+                             "scan failed request_id=" + std::to_string(request_id) +
+                                 " error_code=InternalError message=unknown exception");
+            }
             finish_scan_state(false);
             complete_scan(request_id,
                           completed,
@@ -164,6 +229,11 @@ Result<void> ServiceController::cancel_scan()
         return Result<void>::failure(make_error(ErrorCode::InvalidArgument, "no active scan"));
     }
     active_scan_cancel_.cancel();
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "scanner",
+                     "scan cancelled request_id=" + std::to_string(active_scan_request_id_));
+    }
     return Result<void>::success();
 }
 

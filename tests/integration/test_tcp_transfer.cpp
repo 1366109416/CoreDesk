@@ -10,10 +10,12 @@
 #include <QCryptographicHash>
 #include <QEventLoop>
 #include <QHostAddress>
+#include <QTcpServer>
 #include <QTcpSocket>
 #include <QTimer>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -26,6 +28,43 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+
+namespace coredesk::qt_network {
+
+class TcpTransferClientTestPeer {
+public:
+    static void set_write_acceptance_limit(TcpTransferClient& client, qint64 limit)
+    {
+        client.test_write_acceptance_limit_ = limit;
+    }
+
+    static qint64 pending_write_bytes(const TcpTransferClient& client)
+    {
+        return client.total_pending_write_bytes();
+    }
+
+    static qint64 remainder_bytes(const TcpTransferClient& client)
+    {
+        return client.write_remainder_.size();
+    }
+
+    static std::uint64_t send_offset(const TcpTransferClient& client)
+    {
+        return client.send_offset_;
+    }
+
+    static constexpr qint64 high_water_mark()
+    {
+        return TcpTransferClient::kPendingWriteHighWaterMark;
+    }
+
+    static constexpr qint64 chunk_size()
+    {
+        return TcpTransferClient::kFileChunkSize;
+    }
+};
+
+} // namespace coredesk::qt_network
 
 namespace {
 
@@ -40,6 +79,7 @@ using coredesk::protocol::FrameDecoder;
 using coredesk::protocol::FrameEncoder;
 using coredesk::protocol::MessageType;
 using coredesk::qt_network::TcpTransferClient;
+using coredesk::qt_network::TcpTransferClientTestPeer;
 using coredesk::qt_network::TcpTransferServer;
 using coredesk::service::TransferManager;
 
@@ -116,6 +156,52 @@ public:
 private:
     std::filesystem::path path_;
 };
+
+class BuildTestDirectory {
+public:
+    BuildTestDirectory()
+    {
+#ifdef _WIN32
+        const auto root = std::filesystem::path(QCoreApplication::applicationDirPath().toStdWString());
+#else
+        const auto root = std::filesystem::path(QCoreApplication::applicationDirPath().toStdString());
+#endif
+        path_ = root / "test-data" /
+            ("corrective-step-a-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(path_);
+    }
+
+    ~BuildTestDirectory()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path_, ec);
+    }
+
+    const std::filesystem::path& path() const noexcept
+    {
+        return path_;
+    }
+
+private:
+    std::filesystem::path path_;
+};
+
+void write_pattern_file(const std::filesystem::path& path, std::uint64_t size)
+{
+    std::ofstream file(path, std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    std::array<char, 64 * 1024> block{};
+    for (std::size_t i = 0; i < block.size(); ++i) {
+        block[i] = static_cast<char>((i * 31U + 17U) & 0xffU);
+    }
+    std::uint64_t written = 0;
+    while (written < size) {
+        const auto count = static_cast<std::streamsize>(std::min<std::uint64_t>(block.size(), size - written));
+        file.write(block.data(), count);
+        ASSERT_TRUE(file.good());
+        written += static_cast<std::uint64_t>(count);
+    }
+}
 
 std::vector<std::byte> bytes_from_text(std::string_view text)
 {
@@ -295,6 +381,202 @@ FileResultPayload decode_result_from_frames(const std::vector<Frame>& frames, co
     return result.value();
 }
 
+void complete_raw_transfer(QTcpSocket& socket,
+                           FrameDecoder& decoder,
+                           std::vector<Frame>& frames,
+                           const std::string& transfer_id,
+                           const std::vector<std::byte>& data,
+                           coredesk::RequestId chunk_request_id,
+                           coredesk::RequestId finish_request_id)
+{
+    auto chunk = coredesk::protocol::encode_file_chunk_payload({transfer_id, 0, data});
+    ASSERT_TRUE(chunk.ok());
+    write_payload_frame(socket, MessageType::FileChunk, chunk_request_id, std::move(chunk).value());
+    auto finish = coredesk::protocol::encode_file_finish_payload({transfer_id});
+    ASSERT_TRUE(finish.ok());
+    write_payload_frame(socket, MessageType::FileFinish, finish_request_id, std::move(finish).value());
+    ASSERT_TRUE(wait_for_frame(socket, decoder, frames, [&](const Frame& frame) {
+        return frame.type == MessageType::FileResult && frame.request_id == finish_request_id;
+    }));
+    EXPECT_TRUE(decode_result_from_frames(frames, finish_request_id).ok);
+}
+
+class PausingReceiver {
+public:
+    PausingReceiver()
+    {
+        QObject::connect(&server_, &QTcpServer::newConnection, [&]() {
+            socket_ = server_.nextPendingConnection();
+            socket_->setReadBufferSize(64 * 1024);
+            QObject::connect(socket_, &QTcpSocket::readyRead, [&]() {
+                handle_ready_read();
+            });
+        });
+    }
+
+    bool listen()
+    {
+        return server_.listen(QHostAddress::LocalHost, 0);
+    }
+
+    quint16 port() const
+    {
+        return server_.serverPort();
+    }
+
+    bool offer_accepted() const noexcept
+    {
+        return offer_accepted_;
+    }
+
+    bool offer_received() const noexcept
+    {
+        return offer_received_;
+    }
+
+    void set_auto_accept_offers(bool enabled)
+    {
+        auto_accept_offers_ = enabled;
+    }
+
+    std::uint64_t received_bytes() const noexcept
+    {
+        return received_bytes_;
+    }
+
+    void resume()
+    {
+        paused_ = false;
+        handle_ready_read();
+    }
+
+    void send_unexpected_hello_ack(coredesk::RequestId request_id)
+    {
+        auto payload = coredesk::protocol::encode_hello_ack_payload({1, "UnexpectedAck"});
+        ASSERT_TRUE(payload.ok());
+        send(MessageType::HelloAck, request_id, std::move(payload).value());
+    }
+
+    void send_unexpected_file_accept(coredesk::RequestId request_id, const std::string& transfer_id)
+    {
+        auto payload = coredesk::protocol::encode_file_accept_payload({transfer_id, 0});
+        ASSERT_TRUE(payload.ok());
+        send(MessageType::FileAccept, request_id, std::move(payload).value());
+    }
+
+    void send_unexpected_file_result(coredesk::RequestId request_id, const std::string& transfer_id)
+    {
+        auto payload = coredesk::protocol::encode_file_result_payload({transfer_id, true, ErrorCode::Ok, {}});
+        ASSERT_TRUE(payload.ok());
+        send(MessageType::FileResult, request_id, std::move(payload).value());
+    }
+
+    void send_file_reject(coredesk::RequestId request_id, const std::string& transfer_id)
+    {
+        auto payload = coredesk::protocol::encode_file_reject_payload(
+            {transfer_id, ErrorCode::Busy, "test rejection"});
+        ASSERT_TRUE(payload.ok());
+        send(MessageType::FileReject, request_id, std::move(payload).value());
+    }
+
+    void repeat_last_file_result()
+    {
+        ASSERT_NE(last_finish_request_id_, 0U);
+        send_unexpected_file_result(last_finish_request_id_, offer_.transfer_id);
+    }
+
+private:
+    void send(MessageType type, coredesk::RequestId request_id, std::vector<std::byte> payload)
+    {
+        auto encoded = FrameEncoder::encode(Frame{type, 0, request_id, std::move(payload)});
+        ASSERT_TRUE(encoded.ok());
+        const auto bytes = qbytearray_from_bytes(encoded.value());
+        ASSERT_EQ(socket_->write(bytes), bytes.size());
+    }
+
+    void handle_ready_read()
+    {
+        if (!socket_ || (paused_ && offer_accepted_)) {
+            return;
+        }
+        const auto raw = socket_->readAll();
+        std::vector<std::byte> bytes;
+        bytes.reserve(static_cast<std::size_t>(raw.size()));
+        for (const auto ch : raw) {
+            bytes.push_back(static_cast<std::byte>(static_cast<unsigned char>(ch)));
+        }
+        auto decoded = decoder_.push(bytes);
+        ASSERT_TRUE(decoded.ok());
+        for (const auto& frame : decoded.value()) {
+            handle_frame(frame);
+        }
+    }
+
+    void handle_frame(const Frame& frame)
+    {
+        if (frame.type == MessageType::Hello) {
+            auto payload = coredesk::protocol::encode_hello_ack_payload({1, "PausingReceiver"});
+            ASSERT_TRUE(payload.ok());
+            send(MessageType::HelloAck, frame.request_id, std::move(payload).value());
+            return;
+        }
+        if (frame.type == MessageType::FileOffer) {
+            auto offer = coredesk::protocol::decode_file_offer_payload(frame.payload);
+            ASSERT_TRUE(offer.ok());
+            offer_ = offer.value();
+            offer_received_ = true;
+            hash_.reset();
+            received_bytes_ = 0;
+            if (!auto_accept_offers_) {
+                return;
+            }
+            auto payload = coredesk::protocol::encode_file_accept_payload({offer_.transfer_id, 0});
+            ASSERT_TRUE(payload.ok());
+            offer_accepted_ = true;
+            send(MessageType::FileAccept, frame.request_id, std::move(payload).value());
+            return;
+        }
+        if (frame.type == MessageType::FileChunk) {
+            auto chunk = coredesk::protocol::decode_file_chunk_payload(frame.payload);
+            ASSERT_TRUE(chunk.ok());
+            ASSERT_EQ(chunk.value().offset, received_bytes_);
+            QByteArray data;
+            data.resize(static_cast<qsizetype>(chunk.value().data.size()));
+            for (std::size_t i = 0; i < chunk.value().data.size(); ++i) {
+                data[static_cast<qsizetype>(i)] =
+                    static_cast<char>(std::to_integer<unsigned char>(chunk.value().data[i]));
+            }
+            hash_.addData(data);
+            received_bytes_ += static_cast<std::uint64_t>(data.size());
+            return;
+        }
+        if (frame.type == MessageType::FileFinish) {
+            auto finish = coredesk::protocol::decode_file_finish_payload(frame.payload);
+            ASSERT_TRUE(finish.ok());
+            const auto hash = hash_.result().toHex();
+            const std::string actual(hash.constData(), static_cast<std::size_t>(hash.size()));
+            const auto ok = received_bytes_ == offer_.file_size && actual == offer_.sha256;
+            last_finish_request_id_ = frame.request_id;
+            auto payload = coredesk::protocol::encode_file_result_payload(
+                {offer_.transfer_id, ok, ok ? ErrorCode::Ok : ErrorCode::HashMismatch, ok ? "" : "mismatch"});
+            ASSERT_TRUE(payload.ok());
+            send(MessageType::FileResult, frame.request_id, std::move(payload).value());
+        }
+    }
+
+    QTcpServer server_;
+    QTcpSocket* socket_{};
+    FrameDecoder decoder_;
+    FileOfferPayload offer_;
+    QCryptographicHash hash_{QCryptographicHash::Sha256};
+    std::uint64_t received_bytes_{};
+    coredesk::RequestId last_finish_request_id_{};
+    bool offer_accepted_{false};
+    bool offer_received_{false};
+    bool auto_accept_offers_{true};
+    bool paused_{true};
+};
+
 } // namespace
 
 TEST(TcpTransferIntegrationTest, HelloHandshakeUsesFrameProtocolOverTcpLoopback)
@@ -352,6 +634,166 @@ TEST(TcpTransferIntegrationTest, ReceiverActiveTransferCountReflectsRealState)
         return server.active_transfer_count() == 0U;
     }));
     server.close();
+}
+
+TEST(TcpTransferIntegrationTest, FileOfferBeforeHelloIsRejected)
+{
+    app();
+    TempDirectory receive;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(receive.path());
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket socket;
+    socket.connectToHost(QStringLiteral("127.0.0.1"), server.server_port());
+    ASSERT_TRUE(socket.waitForConnected(3000));
+    auto payload = coredesk::protocol::encode_file_offer_payload(make_offer(valid_transfer_id('1'), "before-hello.bin"));
+    ASSERT_TRUE(payload.ok());
+    write_payload_frame(socket, MessageType::FileOffer, 151, std::move(payload).value());
+    ASSERT_TRUE(wait_until([&]() {
+        return socket.state() == QAbstractSocket::UnconnectedState;
+    }));
+    EXPECT_EQ(server.active_transfer_count(), 0U);
+}
+
+TEST(TcpTransferIntegrationTest, SocketAActiveSocketBInvalidChunkDoesNotAbortA)
+{
+    app();
+    TempDirectory receive;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(receive.path());
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket socket_a;
+    FrameDecoder decoder_a;
+    std::vector<Frame> frames_a;
+    raw_handshake(socket_a, decoder_a, frames_a, server);
+    const auto data = bytes_from_string("socket A remains active");
+    const auto transfer_id = valid_transfer_id('2');
+    raw_offer(socket_a, decoder_a, frames_a, make_offer_for_data(transfer_id, "socket-a.bin", data), 152);
+    ASSERT_TRUE(std::filesystem::exists(receive.path() / "socket-a.bin.coredesk.part"));
+
+    QTcpSocket socket_b;
+    FrameDecoder decoder_b;
+    std::vector<Frame> frames_b;
+    raw_handshake(socket_b, decoder_b, frames_b, server);
+    auto invalid = coredesk::protocol::encode_file_chunk_payload(
+        {valid_transfer_id('3'), 0, bytes_from_string("foreign")});
+    ASSERT_TRUE(invalid.ok());
+    write_payload_frame(socket_b, MessageType::FileChunk, 153, std::move(invalid).value());
+    ASSERT_TRUE(wait_until([&]() {
+        return socket_b.state() == QAbstractSocket::UnconnectedState;
+    }));
+
+    EXPECT_EQ(server.active_transfer_count(), 1U);
+    EXPECT_TRUE(std::filesystem::exists(receive.path() / "socket-a.bin.coredesk.part"));
+
+    complete_raw_transfer(socket_a, decoder_a, frames_a, transfer_id, data, 154, 155);
+    EXPECT_TRUE(std::filesystem::exists(receive.path() / "socket-a.bin"));
+    EXPECT_EQ(read_file_bytes(receive.path() / "socket-a.bin"), data);
+    EXPECT_FALSE(std::filesystem::exists(receive.path() / "socket-a.bin.coredesk.part"));
+}
+
+TEST(TcpTransferIntegrationTest, SocketBDisconnectDoesNotAbortSocketA)
+{
+    app();
+    TempDirectory receive;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(receive.path());
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket socket_a;
+    FrameDecoder decoder_a;
+    std::vector<Frame> frames_a;
+    raw_handshake(socket_a, decoder_a, frames_a, server);
+    const auto data = bytes_from_string("active after foreign disconnect");
+    const auto transfer_id = valid_transfer_id('4');
+    raw_offer(socket_a, decoder_a, frames_a, make_offer_for_data(transfer_id, "disconnect-b.bin", data), 156);
+
+    QTcpSocket socket_b;
+    FrameDecoder decoder_b;
+    std::vector<Frame> frames_b;
+    raw_handshake(socket_b, decoder_b, frames_b, server);
+    socket_b.abort();
+    ASSERT_TRUE(wait_until([&]() {
+        return socket_b.state() == QAbstractSocket::UnconnectedState;
+    }));
+    EXPECT_EQ(server.active_transfer_count(), 1U);
+    EXPECT_TRUE(std::filesystem::exists(receive.path() / "disconnect-b.bin.coredesk.part"));
+    complete_raw_transfer(socket_a, decoder_a, frames_a, transfer_id, data, 161, 162);
+    EXPECT_EQ(read_file_bytes(receive.path() / "disconnect-b.bin"), data);
+    EXPECT_FALSE(std::filesystem::exists(receive.path() / "disconnect-b.bin.coredesk.part"));
+}
+
+TEST(TcpTransferIntegrationTest, FileChunkBeforeAcceptedOfferDoesNotAffectOtherTransfer)
+{
+    app();
+    TempDirectory receive;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(receive.path());
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket owner;
+    FrameDecoder owner_decoder;
+    std::vector<Frame> owner_frames;
+    raw_handshake(owner, owner_decoder, owner_frames, server);
+    const auto owner_id = valid_transfer_id('5');
+    const auto owner_data = bytes_from_string("owner data");
+    raw_offer(owner, owner_decoder, owner_frames, make_offer_for_data(owner_id, "owner.bin", owner_data), 157);
+
+    QTcpSocket offender;
+    FrameDecoder offender_decoder;
+    std::vector<Frame> offender_frames;
+    raw_handshake(offender, offender_decoder, offender_frames, server);
+    auto chunk = coredesk::protocol::encode_file_chunk_payload(
+        {valid_transfer_id('6'), 0, bytes_from_string("no offer")});
+    ASSERT_TRUE(chunk.ok());
+    write_payload_frame(offender, MessageType::FileChunk, 158, std::move(chunk).value());
+    ASSERT_TRUE(wait_until([&]() {
+        return offender.state() == QAbstractSocket::UnconnectedState;
+    }));
+    EXPECT_EQ(server.active_transfer_count(), 1U);
+    EXPECT_TRUE(std::filesystem::exists(receive.path() / "owner.bin.coredesk.part"));
+    complete_raw_transfer(owner, owner_decoder, owner_frames, owner_id, owner_data, 163, 164);
+    EXPECT_EQ(read_file_bytes(receive.path() / "owner.bin"), owner_data);
+    EXPECT_FALSE(std::filesystem::exists(receive.path() / "owner.bin.coredesk.part"));
+}
+
+TEST(TcpTransferIntegrationTest, FileFinishWrongTransferIdDoesNotAbortOtherValidTransfer)
+{
+    app();
+    TempDirectory receive;
+    TcpTransferServer server(QStringLiteral("ServerNode"));
+    server.set_receive_directory(receive.path());
+    ASSERT_TRUE(server.listen(0, QHostAddress::LocalHost).ok());
+
+    QTcpSocket owner;
+    FrameDecoder owner_decoder;
+    std::vector<Frame> owner_frames;
+    raw_handshake(owner, owner_decoder, owner_frames, server);
+    const auto owner_id = valid_transfer_id('7');
+    const auto owner_data = bytes_from_string("owner");
+    raw_offer(owner,
+              owner_decoder,
+              owner_frames,
+              make_offer_for_data(owner_id, "finish-owner.bin", owner_data),
+              159);
+
+    QTcpSocket offender;
+    FrameDecoder offender_decoder;
+    std::vector<Frame> offender_frames;
+    raw_handshake(offender, offender_decoder, offender_frames, server);
+    auto finish = coredesk::protocol::encode_file_finish_payload({valid_transfer_id('8')});
+    ASSERT_TRUE(finish.ok());
+    write_payload_frame(offender, MessageType::FileFinish, 160, std::move(finish).value());
+    ASSERT_TRUE(wait_until([&]() {
+        return offender.state() == QAbstractSocket::UnconnectedState;
+    }));
+    EXPECT_EQ(server.active_transfer_count(), 1U);
+    EXPECT_TRUE(std::filesystem::exists(receive.path() / "finish-owner.bin.coredesk.part"));
+    complete_raw_transfer(owner, owner_decoder, owner_frames, owner_id, owner_data, 165, 166);
+    EXPECT_EQ(read_file_bytes(receive.path() / "finish-owner.bin"), owner_data);
+    EXPECT_FALSE(std::filesystem::exists(receive.path() / "finish-owner.bin.coredesk.part"));
 }
 
 TEST(TcpTransferIntegrationTest, TransferManagerStartStopAndStatusAreIdempotent)
@@ -873,6 +1315,281 @@ TEST(TcpTransferIntegrationTest, SenderTransfersTenMiBFileToReceiver)
 
     client.disconnect_from_host();
     server.close();
+}
+
+TEST(TcpTransferIntegrationTest, PausedReceiverBoundsQueueAndResumesTransfer)
+{
+    app();
+    BuildTestDirectory source;
+    constexpr std::uint64_t file_size = 32U * 1024U * 1024U;
+    const auto source_path = source.path() / "backpressure-32-mib.bin";
+    write_pattern_file(source_path, file_size);
+
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+
+    TcpTransferClient client(QStringLiteral("BackpressureClient"));
+    std::vector<FileResultPayload> results;
+    std::vector<Error> errors;
+    client.set_file_result_callback([&](coredesk::RequestId, const FileResultPayload& payload) {
+        results.push_back(payload);
+    });
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+
+#ifdef _WIN32
+    auto sent = client.send_file(QString::fromStdWString(source_path.wstring()));
+#else
+    auto sent = client.send_file(QString::fromStdString(source_path.string()));
+#endif
+    ASSERT_TRUE(sent.ok());
+    ASSERT_TRUE(wait_until([&]() {
+        return receiver.offer_accepted();
+    }, 60000));
+    ASSERT_TRUE(wait_until([&]() {
+        return TcpTransferClientTestPeer::pending_write_bytes(client) >=
+            TcpTransferClientTestPeer::high_water_mark();
+    }, 30000));
+
+    const auto offset_while_paused = TcpTransferClientTestPeer::send_offset(client);
+    const auto pending_while_paused = TcpTransferClientTestPeer::pending_write_bytes(client);
+    EXPECT_LT(offset_while_paused, file_size);
+    EXPECT_LE(pending_while_paused,
+              TcpTransferClientTestPeer::high_water_mark() + TcpTransferClientTestPeer::chunk_size() + 1024);
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 250));
+    EXPECT_LT(TcpTransferClientTestPeer::send_offset(client), file_size);
+    EXPECT_LE(TcpTransferClientTestPeer::pending_write_bytes(client),
+              TcpTransferClientTestPeer::high_water_mark() + TcpTransferClientTestPeer::chunk_size() + 1024);
+
+    receiver.resume();
+    ASSERT_TRUE(wait_until([&]() {
+        return !results.empty() || !errors.empty();
+    }, 60000));
+    ASSERT_TRUE(errors.empty());
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_TRUE(results[0].ok);
+    EXPECT_EQ(receiver.received_bytes(), file_size);
+    EXPECT_EQ(client.transfer_state(), TcpTransferClient::TransferState::Completed);
+}
+
+TEST(TcpTransferIntegrationTest, PartialWriteRemainderPreservesFrameOrderAndCompletes)
+{
+    app();
+    BuildTestDirectory source;
+    constexpr std::uint64_t file_size = 3U * 256U * 1024U;
+    const auto source_path = source.path() / "partial-write.bin";
+    write_pattern_file(source_path, file_size);
+
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+    receiver.resume();
+
+    TcpTransferClient client(QStringLiteral("PartialWriteClient"));
+    TcpTransferClientTestPeer::set_write_acceptance_limit(client, 1024);
+    std::vector<FileResultPayload> results;
+    std::vector<Error> errors;
+    client.set_file_result_callback([&](coredesk::RequestId, const FileResultPayload& payload) {
+        results.push_back(payload);
+    });
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+
+#ifdef _WIN32
+    ASSERT_TRUE(client.send_file(QString::fromStdWString(source_path.wstring())).ok());
+#else
+    ASSERT_TRUE(client.send_file(QString::fromStdString(source_path.string())).ok());
+#endif
+    ASSERT_TRUE(wait_until([&]() {
+        return TcpTransferClientTestPeer::remainder_bytes(client) > 128 * 1024;
+    }, 10000));
+    const auto offset_with_remainder = TcpTransferClientTestPeer::send_offset(client);
+    EXPECT_EQ(offset_with_remainder, static_cast<std::uint64_t>(TcpTransferClientTestPeer::chunk_size()));
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 25));
+    EXPECT_EQ(TcpTransferClientTestPeer::send_offset(client), offset_with_remainder);
+    EXPECT_GT(TcpTransferClientTestPeer::remainder_bytes(client), 0);
+    EXPECT_LE(TcpTransferClientTestPeer::pending_write_bytes(client),
+              TcpTransferClientTestPeer::high_water_mark() + TcpTransferClientTestPeer::chunk_size() + 1024);
+
+    ASSERT_TRUE(wait_until([&]() {
+        return !results.empty() || !errors.empty();
+    }, 30000));
+    EXPECT_TRUE(errors.empty());
+    ASSERT_EQ(results.size(), 1U);
+    EXPECT_TRUE(results[0].ok);
+    EXPECT_EQ(receiver.received_bytes(), file_size);
+    EXPECT_EQ(client.transfer_state(), TcpTransferClient::TransferState::Completed);
+    EXPECT_EQ(TcpTransferClientTestPeer::remainder_bytes(client), 0);
+    receiver.repeat_last_file_result();
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(results.size(), 1U);
+}
+
+TEST(TcpTransferIntegrationTest, UnexpectedHelloAckDoesNotResetActiveTransfer)
+{
+    app();
+    BuildTestDirectory source;
+    const auto source_path = source.path() / "unexpected-hello.bin";
+    write_pattern_file(source_path, 512U * 1024U);
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+
+    TcpTransferClient client(QStringLiteral("UnexpectedHelloClient"));
+    TcpTransferClientTestPeer::set_write_acceptance_limit(client, 1024);
+    std::vector<Error> errors;
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+#ifdef _WIN32
+    ASSERT_TRUE(client.send_file(QString::fromStdWString(source_path.wstring())).ok());
+#else
+    ASSERT_TRUE(client.send_file(QString::fromStdString(source_path.string())).ok());
+#endif
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Sending;
+    }, 10000));
+    receiver.send_unexpected_hello_ack(1);
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Failed;
+    }));
+    EXPECT_NE(client.transfer_state(), TcpTransferClient::TransferState::Idle);
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(errors.size(), 1U);
+}
+
+TEST(TcpTransferIntegrationTest, DuplicateHelloAckOutsideHelloSentFailsOnce)
+{
+    app();
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+    TcpTransferClient client(QStringLiteral("DuplicateHelloClient"));
+    std::vector<Error> errors;
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+    receiver.send_unexpected_hello_ack(1);
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Failed;
+    }));
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(errors.size(), 1U);
+}
+
+TEST(TcpTransferIntegrationTest, FileAcceptOutsideOfferingFailsOnce)
+{
+    app();
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+    TcpTransferClient client(QStringLiteral("UnexpectedAcceptClient"));
+    std::vector<Error> errors;
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+    receiver.send_unexpected_file_accept(201, valid_transfer_id('9'));
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Failed;
+    }));
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(errors.size(), 1U);
+}
+
+TEST(TcpTransferIntegrationTest, FileResultOutsideFinishingFailsOnce)
+{
+    app();
+    PausingReceiver receiver;
+    ASSERT_TRUE(receiver.listen());
+    TcpTransferClient client(QStringLiteral("UnexpectedResultClient"));
+    std::vector<Error> errors;
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+    receiver.send_unexpected_file_result(202, valid_transfer_id('0'));
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Failed;
+    }));
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(errors.size(), 1U);
+}
+
+TEST(TcpTransferIntegrationTest, FileRejectWrongTransferIdFailsCorrelation)
+{
+    app();
+    PausingReceiver receiver;
+    receiver.set_auto_accept_offers(false);
+    ASSERT_TRUE(receiver.listen());
+
+    TcpTransferClient client(QStringLiteral("RejectCorrelationClient"));
+    std::vector<Error> errors;
+    std::vector<FileRejectPayload> rejects;
+    client.set_error_callback([&](const Error& error) {
+        errors.push_back(error);
+    });
+    client.set_file_reject_callback([&](coredesk::RequestId, const FileRejectPayload& payload) {
+        rejects.push_back(payload);
+    });
+    client.connect_to_host(QStringLiteral("127.0.0.1"), receiver.port());
+    ASSERT_TRUE(wait_until([&]() {
+        return client.handshake_complete();
+    }));
+
+    const auto current_transfer_id = valid_transfer_id('b');
+    const auto request_id = client.send_file_offer(make_offer(current_transfer_id, "correlation.bin"));
+    ASSERT_NE(request_id, 0U);
+    ASSERT_TRUE(wait_until([&]() {
+        return receiver.offer_received();
+    }));
+    ASSERT_EQ(client.transfer_state(), TcpTransferClient::TransferState::Offering);
+
+    receiver.send_file_reject(request_id, valid_transfer_id('c'));
+    ASSERT_TRUE(wait_until([&]() {
+        return client.transfer_state() == TcpTransferClient::TransferState::Failed;
+    }));
+    EXPECT_NE(client.transfer_state(), TcpTransferClient::TransferState::Idle);
+    EXPECT_TRUE(rejects.empty());
+    EXPECT_FALSE(wait_until([]() {
+        return false;
+    }, 100));
+    EXPECT_EQ(errors.size(), 1U);
+    EXPECT_TRUE(rejects.empty());
 }
 
 TEST(TcpTransferIntegrationTest, SenderSha256PreparationDoesNotBlockEventLoop)

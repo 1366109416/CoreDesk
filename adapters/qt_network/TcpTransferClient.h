@@ -1,11 +1,14 @@
 #pragma once
 
+#include "coredesk/common/Logger.h"
 #include "coredesk/common/Result.h"
 #include "coredesk/protocol/FrameCodec.h"
 #include "coredesk/protocol/JsonPayload.h"
 
 #include <QObject>
+#include <QByteArray>
 #include <QString>
+#include <QtTypes>
 
 #include <functional>
 #include <memory>
@@ -16,6 +19,8 @@ class QFile;
 class QThread;
 
 namespace coredesk::qt_network {
+
+class TcpTransferClientTestPeer;
 
 class TcpTransferClient : public QObject {
 public:
@@ -51,6 +56,7 @@ public:
     void set_file_reject_callback(FileRejectCallback callback);
     void set_file_result_callback(FileResultCallback callback);
     void set_error_callback(ErrorCallback callback);
+    void set_logger(Logger* logger) noexcept;
 
     void connect_to_host(const QString& host, quint16 port);
     void disconnect_from_host();
@@ -62,6 +68,11 @@ public:
     Result<RequestId> send_file(const QString& path);
 
 private:
+    friend class TcpTransferClientTestPeer;
+
+    static constexpr qint64 kFileChunkSize = 256 * 1024;
+    static constexpr qint64 kPendingWriteHighWaterMark = 2 * 1024 * 1024;
+
     void handle_connected();
     void handle_ready_read();
     void handle_disconnected();
@@ -77,10 +88,16 @@ private:
     void cleanup_hash_worker();
     std::string generate_transfer_id() const;
     void send_next_chunk();
+    void schedule_send_pump();
+    void handle_bytes_written();
+    void schedule_remainder_flush();
+    void flush_write_remainder();
+    qint64 write_to_socket(const QByteArray& bytes);
+    qint64 total_pending_write_bytes() const;
     void send_file_finish();
     void cleanup_transfer_file();
     void fail_transfer(Error error);
-    void send_frame(protocol::Frame frame);
+    Result<void> send_frame(protocol::Frame frame);
 
     QString node_name_;
     std::unique_ptr<QTcpSocket> socket_;
@@ -89,6 +106,7 @@ private:
     TransferState transfer_state_{TransferState::Idle};
     OfferState offer_state_{OfferState::None};
     RequestId next_request_id_{1};
+    RequestId pending_hello_request_id_{0};
     RequestId pending_offer_request_id_{0};
     RequestId pending_finish_request_id_{0};
     std::string pending_offer_transfer_id_;
@@ -97,11 +115,16 @@ private:
     std::uint64_t send_file_size_{0};
     std::unique_ptr<QThread> hash_thread_;
     std::unique_ptr<QFile> send_file_;
+    bool send_pump_scheduled_{false};
+    QByteArray write_remainder_;
+    bool remainder_flush_scheduled_{false};
+    qint64 test_write_acceptance_limit_{-1};
     HandshakeCallback handshake_callback_;
     FileAcceptCallback file_accept_callback_;
     FileRejectCallback file_reject_callback_;
     FileResultCallback file_result_callback_;
     ErrorCallback error_callback_;
+    Logger* logger_{};
 };
 
 } // namespace coredesk::qt_network

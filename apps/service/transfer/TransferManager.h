@@ -28,6 +28,8 @@ public:
 
     ~TransferManager();
 
+    void set_logger(Logger* logger) noexcept;
+
     Result<void> start();
 
     void stop();

@@ -24,6 +24,7 @@ include(cmake/Sanitizers.cmake)
 add_library(coredesk_common
     src/common/Cancellation.cpp
     src/common/Error.cpp
+    src/common/Logger.cpp
 )
 add_library(coredesk::common ALIAS coredesk_common)
 target_include_directories(coredesk_common
@@ -130,80 +131,80 @@ target_link_libraries(coredesk_cli PRIVATE coredesk_index)
 coredesk_set_target_warnings(coredesk_cli)
 coredesk_enable_sanitizers(coredesk_cli)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Network)
-if(COREDESK_BUILD_UI)
-    find_package(Qt6 REQUIRED COMPONENTS Widgets)
-endif()
+if(COREDESK_BUILD_UI OR COREDESK_BUILD_NETWORK)
+    find_package(Qt6 REQUIRED COMPONENTS Core Network)
+    if(COREDESK_BUILD_UI)
+        find_package(Qt6 REQUIRED COMPONENTS Widgets)
+    endif()
 
-add_library(coredesk_qt_ipc
-    adapters/qt_ipc/LocalIpcClient.cpp
-)
-target_include_directories(coredesk_qt_ipc
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(coredesk_qt_ipc PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
-target_compile_features(coredesk_qt_ipc PUBLIC cxx_std_20)
-coredesk_set_target_warnings(coredesk_qt_ipc)
-coredesk_enable_sanitizers(coredesk_qt_ipc)
-
-add_library(coredesk_qt_ipc_server
-    adapters/qt_ipc/LocalIpcServer.cpp
-)
-target_include_directories(coredesk_qt_ipc_server
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
-        $<INSTALL_INTERFACE:include>
-)
-target_link_libraries(coredesk_qt_ipc_server PUBLIC coredesk_protocol coredesk_service_lib Qt6::Core Qt6::Network)
-target_compile_features(coredesk_qt_ipc_server PUBLIC cxx_std_20)
-coredesk_set_target_warnings(coredesk_qt_ipc_server)
-coredesk_enable_sanitizers(coredesk_qt_ipc_server)
-
-add_executable(coredesk_service
-    apps/service/main.cpp
-)
-target_link_libraries(coredesk_service PRIVATE coredesk_service_lib coredesk_qt_ipc_server Qt6::Core)
-coredesk_set_target_warnings(coredesk_service)
-coredesk_enable_sanitizers(coredesk_service)
-
-if(COREDESK_BUILD_UI)
-    add_executable(coredesk_desktop
-        apps/desktop/main.cpp
-        ui/MainWindow.cpp
-        ui/SearchWidget.cpp
-        ui/TransferWidget.cpp
+    add_library(coredesk_qt_ipc
+        adapters/qt_ipc/LocalIpcClient.cpp
     )
-    target_include_directories(coredesk_desktop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
-    target_link_libraries(coredesk_desktop PRIVATE coredesk_qt_ipc Qt6::Widgets)
-    coredesk_set_target_warnings(coredesk_desktop)
-    coredesk_enable_sanitizers(coredesk_desktop)
-endif()
-
-if(COREDESK_BUILD_NETWORK)
-    add_library(coredesk_qt_network
-        adapters/qt_network/TcpTransferClient.cpp
-        adapters/qt_network/TcpTransferServer.cpp
-    )
-    target_include_directories(coredesk_qt_network
+    target_include_directories(coredesk_qt_ipc
         PUBLIC
-            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_network>
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
             $<INSTALL_INTERFACE:include>
     )
-    target_link_libraries(coredesk_qt_network PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
-    target_compile_features(coredesk_qt_network PUBLIC cxx_std_20)
-    coredesk_set_target_warnings(coredesk_qt_network)
-    coredesk_enable_sanitizers(coredesk_qt_network)
-else()
-    add_library(coredesk_qt_network INTERFACE)
-    target_link_libraries(coredesk_qt_network INTERFACE coredesk_protocol)
-endif()
+    target_link_libraries(coredesk_qt_ipc PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
+    target_compile_features(coredesk_qt_ipc PUBLIC cxx_std_20)
+    coredesk_set_target_warnings(coredesk_qt_ipc)
+    coredesk_enable_sanitizers(coredesk_qt_ipc)
 
-if(COREDESK_BUILD_NETWORK)
-    target_sources(coredesk_service PRIVATE apps/service/transfer/TransferManager.cpp)
-    target_link_libraries(coredesk_service PRIVATE coredesk_qt_network)
-    target_compile_definitions(coredesk_service PRIVATE COREDESK_BUILD_NETWORK=1)
+    add_library(coredesk_qt_ipc_server
+        adapters/qt_ipc/LocalIpcServer.cpp
+    )
+    target_include_directories(coredesk_qt_ipc_server
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_ipc>
+            $<INSTALL_INTERFACE:include>
+    )
+    target_link_libraries(coredesk_qt_ipc_server PUBLIC coredesk_protocol coredesk_service_lib Qt6::Core Qt6::Network)
+    target_compile_features(coredesk_qt_ipc_server PUBLIC cxx_std_20)
+    coredesk_set_target_warnings(coredesk_qt_ipc_server)
+    coredesk_enable_sanitizers(coredesk_qt_ipc_server)
+
+    add_executable(coredesk_service
+        apps/service/main.cpp
+    )
+    target_link_libraries(coredesk_service PRIVATE coredesk_service_lib coredesk_qt_ipc_server Qt6::Core)
+    coredesk_set_target_warnings(coredesk_service)
+    coredesk_enable_sanitizers(coredesk_service)
+
+    if(COREDESK_BUILD_UI)
+        add_executable(coredesk_desktop
+            apps/desktop/main.cpp
+            ui/MainWindow.cpp
+            ui/SearchWidget.cpp
+            ui/TransferWidget.cpp
+        )
+        target_include_directories(coredesk_desktop PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/ui)
+        target_link_libraries(coredesk_desktop PRIVATE coredesk_qt_ipc Qt6::Widgets)
+        coredesk_set_target_warnings(coredesk_desktop)
+        coredesk_enable_sanitizers(coredesk_desktop)
+    endif()
+
+    if(COREDESK_BUILD_NETWORK)
+        add_library(coredesk_qt_network
+            adapters/qt_network/TcpTransferClient.cpp
+            adapters/qt_network/TcpTransferServer.cpp
+        )
+        target_include_directories(coredesk_qt_network
+            PUBLIC
+                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/adapters/qt_network>
+                $<INSTALL_INTERFACE:include>
+        )
+        target_link_libraries(coredesk_qt_network PUBLIC coredesk_protocol Qt6::Core Qt6::Network)
+        target_compile_features(coredesk_qt_network PUBLIC cxx_std_20)
+        coredesk_set_target_warnings(coredesk_qt_network)
+        coredesk_enable_sanitizers(coredesk_qt_network)
+
+        target_sources(coredesk_service PRIVATE apps/service/transfer/TransferManager.cpp)
+        target_link_libraries(coredesk_service PRIVATE coredesk_qt_network)
+        target_compile_definitions(coredesk_service PRIVATE COREDESK_BUILD_NETWORK=1)
+    else()
+        add_library(coredesk_qt_network INTERFACE)
+        target_link_libraries(coredesk_qt_network INTERFACE coredesk_protocol)
+    endif()
 endif()
 
 add_executable(coredesk_bench_search
@@ -213,6 +214,22 @@ target_link_libraries(coredesk_bench_search PRIVATE coredesk_common)
 target_link_libraries(coredesk_bench_search PRIVATE coredesk_index)
 coredesk_set_target_warnings(coredesk_bench_search)
 coredesk_enable_sanitizers(coredesk_bench_search)
+
+add_executable(coredesk_bench_scan
+    benchmarks/bench_scan.cpp
+)
+target_link_libraries(coredesk_bench_scan PRIVATE coredesk_common coredesk_filesystem)
+coredesk_set_target_warnings(coredesk_bench_scan)
+coredesk_enable_sanitizers(coredesk_bench_scan)
+
+if(COREDESK_BUILD_NETWORK)
+    add_executable(coredesk_bench_transfer
+        benchmarks/bench_transfer.cpp
+    )
+    target_link_libraries(coredesk_bench_transfer PRIVATE coredesk_qt_network Qt6::Core Qt6::Network)
+    coredesk_set_target_warnings(coredesk_bench_transfer)
+    coredesk_enable_sanitizers(coredesk_bench_transfer)
+endif()
 
 if(COREDESK_BUILD_TESTS)
     include(CTest)
@@ -236,12 +253,16 @@ if(COREDESK_BUILD_TESTS)
         tests/unit/test_service_controller.cpp
         tests/unit/test_file_scanner.cpp
         tests/unit/test_lru_cache.cpp
+        tests/unit/test_logger.cpp
         tests/unit/test_result.cpp
         tests/unit/test_search_engine.cpp
         tests/unit/test_thread_pool.cpp
         tests/unit/test_tokenizer.cpp
     )
     target_link_libraries(coredesk_tests PRIVATE coredesk_common coredesk_filesystem coredesk_index coredesk_protocol coredesk_service_lib GTest::gtest_main)
+    target_compile_definitions(coredesk_tests PRIVATE
+        COREDESK_TEST_DATA_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-data/logger"
+    )
     target_compile_features(coredesk_tests PRIVATE cxx_std_20)
     coredesk_set_target_warnings(coredesk_tests)
     coredesk_enable_sanitizers(coredesk_tests)
@@ -249,36 +270,38 @@ if(COREDESK_BUILD_TESTS)
     include(GoogleTest)
     gtest_discover_tests(coredesk_tests)
 
-    set(COREDESK_INTEGRATION_TEST_SOURCES
-        tests/integration/test_local_ipc.cpp
-    )
-    if(COREDESK_BUILD_NETWORK)
-        list(APPEND COREDESK_INTEGRATION_TEST_SOURCES
-            tests/integration/test_service_tcp_integration.cpp
-            tests/integration/test_tcp_transfer.cpp
+    if(COREDESK_BUILD_UI OR COREDESK_BUILD_NETWORK)
+        set(COREDESK_INTEGRATION_TEST_SOURCES
+            tests/integration/test_local_ipc.cpp
         )
-    endif()
+        if(COREDESK_BUILD_NETWORK)
+            list(APPEND COREDESK_INTEGRATION_TEST_SOURCES
+                tests/integration/test_service_tcp_integration.cpp
+                tests/integration/test_tcp_transfer.cpp
+            )
+        endif()
 
-    add_executable(coredesk_integration_tests
-        ${COREDESK_INTEGRATION_TEST_SOURCES}
-    )
-    target_link_libraries(coredesk_integration_tests PRIVATE coredesk_common coredesk_protocol coredesk_service_lib coredesk_qt_ipc coredesk_qt_ipc_server Qt6::Core Qt6::Network GTest::gtest_main)
-    if(COREDESK_BUILD_NETWORK)
-        target_sources(coredesk_integration_tests PRIVATE apps/service/transfer/TransferManager.cpp)
-        target_include_directories(coredesk_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps/service/transfer)
-        target_link_libraries(coredesk_integration_tests PRIVATE coredesk_qt_network)
-        target_compile_definitions(coredesk_integration_tests PRIVATE COREDESK_BUILD_NETWORK=1)
-    endif()
-    target_compile_features(coredesk_integration_tests PRIVATE cxx_std_20)
-    coredesk_set_target_warnings(coredesk_integration_tests)
-    coredesk_enable_sanitizers(coredesk_integration_tests)
-    add_test(NAME coredesk_integration_tests COMMAND coredesk_integration_tests)
-    if(WIN32)
-        get_filename_component(COREDESK_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
-        set_tests_properties(coredesk_integration_tests
-            PROPERTIES
-                ENVIRONMENT "PATH=${COREDESK_QT_PREFIX}/bin"
+        add_executable(coredesk_integration_tests
+            ${COREDESK_INTEGRATION_TEST_SOURCES}
         )
+        target_link_libraries(coredesk_integration_tests PRIVATE coredesk_common coredesk_protocol coredesk_service_lib coredesk_qt_ipc coredesk_qt_ipc_server Qt6::Core Qt6::Network GTest::gtest_main)
+        if(COREDESK_BUILD_NETWORK)
+            target_sources(coredesk_integration_tests PRIVATE apps/service/transfer/TransferManager.cpp)
+            target_include_directories(coredesk_integration_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/apps/service/transfer)
+            target_link_libraries(coredesk_integration_tests PRIVATE coredesk_qt_network)
+            target_compile_definitions(coredesk_integration_tests PRIVATE COREDESK_BUILD_NETWORK=1)
+        endif()
+        target_compile_features(coredesk_integration_tests PRIVATE cxx_std_20)
+        coredesk_set_target_warnings(coredesk_integration_tests)
+        coredesk_enable_sanitizers(coredesk_integration_tests)
+        add_test(NAME coredesk_integration_tests COMMAND coredesk_integration_tests)
+        if(WIN32)
+            get_filename_component(COREDESK_QT_PREFIX "${Qt6_DIR}/../../.." ABSOLUTE)
+            set_tests_properties(coredesk_integration_tests
+                PROPERTIES
+                    ENVIRONMENT "PATH=${COREDESK_QT_PREFIX}/bin"
+            )
+        endif()
     endif()
 
     if(COREDESK_BUILD_UI)

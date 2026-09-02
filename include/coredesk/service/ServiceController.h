@@ -1,6 +1,7 @@
 #pragma once
 
 #include "coredesk/common/Cancellation.h"
+#include "coredesk/common/Logger.h"
 #include "coredesk/common/Result.h"
 #include "coredesk/common/Types.h"
 #include "coredesk/filesystem/FileScanner.h"
@@ -46,6 +47,8 @@ public:
     ServiceController(const ServiceController&) = delete;
     ServiceController& operator=(const ServiceController&) = delete;
 
+    void set_logger(Logger* logger) noexcept;
+
     Result<ScanStarted> start_scan(RequestId request_id,
                                    const protocol::ScanRequestPayload& payload,
                                    ProgressCallback progress,
@@ -78,6 +81,7 @@ private:
 
     filesystem::FileScanner scanner_;
     index::SearchEngine search_engine_;
+    Logger* logger_{};
 };
 
 std::string_view to_string(ServiceState state) noexcept;

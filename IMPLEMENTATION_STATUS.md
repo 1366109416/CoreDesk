@@ -3,6 +3,8 @@
 ## Current Milestone
 M7 - Transfer Management (DONE)
 
+Pre-M8 Stability Corrective Pass (DONE)
+
 ## Completed
 - Preserved M0-M6 behavior, including CLI, scanner/index/search tests, FrameProtocol tests, Service + Local IPC integration tests, Qt Desktop UI tests, and TCP loopback transfer tests.
 - Reused the existing M3 `FrameProtocol` for all Local IPC transfer-management messages and TCP LAN transfer messages.
@@ -156,15 +158,102 @@ M7 - Transfer Management (DONE)
 
 ## Known Issues
 - `TcpTransferClient::send_file()` starts an async hash worker before the real `FileOffer` request is sent. It returns success with a sentinel request id rather than the final `FileOffer` request id. Callback-based transfer completion works, but future Desktop send workflow may need clearer request-id semantics.
-- `QTcpSocket::write()` results are not fully surfaced as structured transfer errors, and sender chunking currently does not implement explicit backpressure based on `bytesWritten`.
 - The default receive directory remains `temp/CoreDeskReceived` until the user changes it through the M7 Desktop control.
 - Desktop transfer sending workflow is not implemented in this M7 step. There is no Send File button, peer list, device discovery, transfer progress UI, transfer history, or persistent settings.
 - Qt runtime tests require `D:\Qt\6.11.2\msvc2022_64\bin` on the current process `PATH`, so that Qt Debug DLLs can be found. Qt DLLs were not copied into the project or system directories.
 - Fresh FetchContent downloads from GitHub may fail in the current environment due TLS credential/network reset errors. Reusing the existing local FetchContent source cache allowed configure/build/test verification to complete.
 - The M3 non-blocking performance note remains: `FrameDecoder::push()` uses `vector::erase(begin, ...)`, which can add data movement for many tiny frames.
 
+## Pre-M8 Stability Corrective Pass
+
+Status: DONE
+
+### Step A - TCP correctness and bounded memory
+
+- Added a 2 MiB sender high-water mark with one 256 KiB file chunk read per event-loop pump.
+- Added bounded partial-write remainder handling for client data/control frames and server control frames.
+- Added strict client response state/request/transfer correlation, including `FileReject` transfer-id correlation.
+- Isolated server connection-local protocol failures so a foreign socket cannot clean up another socket's active transfer.
+- Added minimum per-connection handshake/message-order enforcement and targeted integration coverage.
+- TCP integration result: 32/32 passed.
+
+### Step B1 - Logging
+
+- Added the pure C++ `Logger` with synchronized complete-line file output and Debug/Info/Warning/Error levels.
+- Added service, scan/index, Local IPC, TCP lifecycle/protocol, and structured `ErrorCode` logging.
+- Added CR/LF sanitization and noexcept-safe logging/close/status behavior.
+- Logger tests: 6/6 passed.
+- Default service log path is `QStandardPaths::AppLocalDataLocation/logs/coredesk_service.log`; `COREDESK_LOG_FILE` provides an override. Rotation is not implemented.
+
+### Step B2a - Windows benchmark evidence
+
+- Recorded real Release search, scan, and loopback TCP transfer benchmarks on Windows 11; full evidence is summarized in `docs/PERFORMANCE.md`.
+- Verified 256 KiB transfer chunks, a 2 MiB high-water mark, maximum measured combined pending data of 2,097,696 bytes, and no whole-file buffering.
+- Recorded both 1 GiB performance modes: 53.384 MiB/s fast and 13.863 MiB/s slow, plus an earlier 14.1097 MiB/s slow run. Root cause remains unknown.
+- Event-loop measurements use `Qt::PreciseTimer`, a 5 ms cadence, separate callback-interval/deadline-lateness metrics, and p95/p99 reporting.
+
+### Step B2b - Linux Core and ASan evidence
+
+- Fixed a real CMake portability defect: `UI=OFF/NETWORK=OFF` no longer requires Qt or registers Qt integration targets.
+- Linux normal Core + tests: 127 total, 127 passed, 0 failed, 0 skipped.
+- Linux ASan Core + tests: 127 total, 127 passed, 0 failed, 0 skipped.
+- ASan/LeakSanitizer found no UAF, buffer overflow, double free, or leak report.
+- Both directory-symlink tests that skip in the Windows environment executed and passed in Linux normal and ASan builds.
+- Accurate scope: Linux Core + tests only; Linux Qt Desktop/IPC/TCP were not verified.
+
+### Latest Windows regression
+
+- Debug build with `COREDESK_BUILD_NETWORK=ON`, `COREDESK_BUILD_UI=OFF`, and tests enabled: PASS.
+- CTest: 128 total, 126 passed, 0 failed, 2 skipped.
+- Skips remain the two Windows directory-symlink environment cases closed by Linux coverage.
+
+## Corrective Known Finding
+
+- Windows 1 GiB loopback transfer has reproducible performance variability: approximately 53 MiB/s in one v2 run and approximately 14 MiB/s in two slow runs. All completed with matching SHA-256 and bounded sender queues. Root cause is not isolated; this is not a known correctness failure.
+
+## Deferred Technical Debt and Future Features
+
+- Logger file rotation/retention is not implemented.
+- Outgoing transfer progress, cancel, and timeout behavior remain deferred.
+- Desktop Send File and outgoing-transfer Local IPC remain deferred product features.
+- Receiver QFile write and incremental hash remain on the Qt event thread; workerization is deferred unless future isolated evidence justifies it.
+- `FrameDecoder::push()` front erase may be optimized if many-tiny-frame profiling justifies the change.
+- Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification remain for the formal cross-platform milestone.
+- TSan was not run; normative M7 does not require it as a mandatory DoD item.
+
+## Corrective Evidence Documents
+
+- `docs/PERFORMANCE.md`
+- `docs/BUG_POSTMORTEM.md`
+
+## Corrective Files Added
+
+- `include/coredesk/common/Logger.h`
+- `src/common/Logger.cpp`
+- `tests/unit/test_logger.cpp`
+- `benchmarks/bench_scan.cpp`
+- `benchmarks/bench_transfer.cpp`
+- `docs/PERFORMANCE.md`
+- `docs/BUG_POSTMORTEM.md`
+
+## Corrective Files Modified
+
+- `.gitignore`
+- `CMakeLists.txt`
+- `README.md`
+- `IMPLEMENTATION_STATUS.md`
+- `adapters/qt_ipc/LocalIpcServer.h/.cpp`
+- `adapters/qt_network/TcpTransferClient.h/.cpp`
+- `adapters/qt_network/TcpTransferServer.h/.cpp`
+- `apps/service/main.cpp`
+- `apps/service/transfer/TransferManager.h/.cpp`
+- `include/coredesk/service/ServiceController.h`
+- `src/service/ServiceController.cpp`
+- `benchmarks/bench_search.cpp`
+- `tests/integration/test_tcp_transfer.cpp`
+
 ## Deviations from Spec
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8 - Packaging / Finalization (NOT STARTED)
+M8 - Cross-platform Support + Portfolio/Interview Packaging (NOT STARTED)
