@@ -3,10 +3,10 @@
 CoreDesk is a C++20 desktop file indexing and LAN transfer client. The
 normative implementation specification lives in `docs/COREDESK_SPEC.md`.
 
-The current corrective stability pass includes bounded-memory TCP sending,
-checked partial socket writes, connection-local receive isolation, a
-thread-safe file logger, real Windows benchmarks, and Linux Core/ASan evidence.
-Formal M8 packaging has not started.
+The completed stability work includes bounded-memory TCP sending, checked
+partial socket writes, connection-local receive isolation, a thread-safe file
+logger, real Windows benchmarks, and Linux Core/ASan evidence. M8 is currently
+in progress; its outgoing-transfer and build-closure stages are complete.
 
 ## Verified stability and performance
 
@@ -37,8 +37,8 @@ case study is in [`docs/BUG_POSTMORTEM.md`](docs/BUG_POSTMORTEM.md).
 Linux verification currently covers **Core + tests**, not the full Qt
 application:
 
-- Ubuntu 24.04.3 LTS / GCC 13.3 normal: 127/127 passed.
-- Ubuntu 24.04.3 LTS / GCC 13.3 ASan: 127/127 passed, no sanitizer report.
+- Ubuntu 24.04.3 LTS / GCC 13.3 post-M8-A Core regression: 130/130 passed.
+- Ubuntu 24.04.3 LTS / GCC 13.3 Pre-M8 ASan: 127/127 passed, no sanitizer report.
 - Both directory-symlink tests skipped by the Windows environment executed and
   passed in Linux normal and ASan builds.
 
@@ -70,22 +70,9 @@ rejection, and SHA-256 verification.
 
 ## Build
 
-```powershell
-cmake -S . -B build -DCOREDESK_BUILD_TESTS=ON
-cmake --build build --config Debug
-ctest --test-dir build -C Debug --output-on-failure
-.\build\Debug\coredesk_cli.exe --version
-```
-
-The pure C++ Core and its tests can be verified without Qt by disabling both
-the UI and network adapters:
-
-```powershell
-cmake -S . -B build-m0-verify -G Ninja -DCOREDESK_BUILD_TESTS=ON -DCOREDESK_BUILD_UI=OFF -DCOREDESK_BUILD_NETWORK=OFF
-cmake --build build-m0-verify
-ctest --test-dir build-m0-verify --output-on-failure
-.\build-m0-verify\coredesk_cli.exe --version
-```
-
-This Core-only configuration does not build or verify the Qt Desktop, Local
-IPC service executable, or Qt TCP adapter.
+See the [Build and Platform Verification Guide](docs/BUILD.md) for the Windows
+feature matrix, full Windows build commands, Linux Core-only commands, Linux
+ASan commands, dependency overrides, and exact tested-versus-not-verified
+boundaries. Windows full application behavior is verified; Linux verification
+covers Core + tests. Linux Qt Desktop, Local IPC/service, and TCP paths remain
+not verified rather than being declared unsupported.

@@ -3,11 +3,22 @@
 ## Current Milestone
 M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
 
+M8-B - Cross-platform / Build Closure (CLOSED)
+
 M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
 
 Pre-M8 Stability Corrective Pass (DONE)
 
 ## Completed
+- Completed M8-B build and platform documentation in `docs/BUILD.md`:
+  - documented the four Windows UI/network feature combinations;
+  - documented reproducible Windows full, Linux Core-only, and Linux ASan
+    configure/build/test commands;
+  - recorded the verified Windows full and Linux Core/ASan evidence boundaries;
+  - recorded Linux Qt Desktop, Local IPC/service, and TCP paths as not verified,
+    not unsupported;
+  - confirmed that normative v1.0 does not require installing Linux Qt when the
+    complete second-platform environment is unavailable.
 - Implemented the M8-A single-file outgoing path from Desktop through Local IPC
   and the service-owned `TransferManager` to the existing bounded-memory
   `TcpTransferClient`.
@@ -245,7 +256,7 @@ Status: DONE
 - Outgoing transfer history, queuing, peer discovery, and persistent target settings remain deferred product features.
 - Receiver QFile write and incremental hash remain on the Qt event thread; workerization is deferred unless future isolated evidence justifies it.
 - `FrameDecoder::push()` front erase may be optimized if many-tiny-frame profiling justifies the change.
-- Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification remain for the formal cross-platform milestone.
+- Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification are not required for the current v1.0 closure and remain deferred/not verified.
 - TSan was not run; normative M7 does not require it as a mandatory DoD item.
 
 ## Corrective Evidence Documents
@@ -283,4 +294,4 @@ Status: DONE
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8-B. M8 remains in progress and is not yet complete.
+M8-C. M8 remains in progress and v1.0 is not yet complete.
