@@ -112,6 +112,14 @@ int main(int argc, char** argv)
                  status.port,
                  path_to_utf8_string(status.receive_directory),
                  status.active_transfers});
+        },
+        [&transfer_manager](const coredesk::protocol::SendFileRequestPayload& payload,
+                            coredesk::qt_ipc::TransferManagementHandlers::SendFileCompletion completion)
+            -> coredesk::Result<void> {
+            return transfer_manager.send_file(path_from_utf8_string(payload.file_path),
+                                              payload.host,
+                                              payload.port,
+                                              std::move(completion));
         }});
 #endif
 

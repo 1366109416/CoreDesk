@@ -42,6 +42,7 @@ public:
     RequestId send_disable_lan_transfer_request(const protocol::DisableLanTransferRequestPayload& payload = {});
     RequestId send_set_receive_directory_request(const protocol::SetReceiveDirectoryRequestPayload& payload);
     RequestId send_get_transfer_status_request(const protocol::GetTransferStatusRequestPayload& payload = {});
+    RequestId send_file_request(const protocol::SendFileRequestPayload& payload);
     Result<void> send_frame(protocol::Frame frame);
 
 private:

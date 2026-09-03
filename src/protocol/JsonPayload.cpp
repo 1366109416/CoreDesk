@@ -817,6 +817,102 @@ Result<GetTransferStatusResponsePayload> decode_get_transfer_status_response_pay
     });
 }
 
+Result<std::vector<std::byte>> encode_send_file_request_payload(const SendFileRequestPayload& payload)
+{
+    if (payload.file_path.empty()) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "file_path must not be empty"});
+    }
+    if (payload.host.empty()) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "host must not be empty"});
+    }
+    if (payload.port == 0) {
+        return Result<std::vector<std::byte>>::failure({ErrorCode::InvalidArgument, "port must be in range 1..65535"});
+    }
+    return dump_json(Json{{"file_path", payload.file_path}, {"host", payload.host}, {"port", payload.port}});
+}
+
+Result<SendFileRequestPayload> decode_send_file_request_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<SendFileRequestPayload>(bytes, [](const Json& json) -> Result<SendFileRequestPayload> {
+        auto file_path = required_string(json, "file_path");
+        auto host = required_string(json, "host");
+        auto port = required_u16(json, "port");
+        if (!file_path.ok()) {
+            return Result<SendFileRequestPayload>::failure(file_path.error());
+        }
+        if (!host.ok()) {
+            return Result<SendFileRequestPayload>::failure(host.error());
+        }
+        if (!port.ok()) {
+            return Result<SendFileRequestPayload>::failure(port.error());
+        }
+        if (file_path.value().empty()) {
+            return Result<SendFileRequestPayload>::failure({ErrorCode::InvalidArgument, "file_path must not be empty"});
+        }
+        if (host.value().empty()) {
+            return Result<SendFileRequestPayload>::failure({ErrorCode::InvalidArgument, "host must not be empty"});
+        }
+        if (port.value() == 0) {
+            return Result<SendFileRequestPayload>::failure({ErrorCode::InvalidArgument, "port must be in range 1..65535"});
+        }
+        return Result<SendFileRequestPayload>::success(
+            {std::move(file_path).value(), std::move(host).value(), port.value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_send_file_accepted_payload(const SendFileAcceptedPayload& payload)
+{
+    return dump_json(Json{{"accepted", payload.accepted}});
+}
+
+Result<SendFileAcceptedPayload> decode_send_file_accepted_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<SendFileAcceptedPayload>(bytes, [](const Json& json) -> Result<SendFileAcceptedPayload> {
+        auto accepted = required_bool(json, "accepted");
+        if (!accepted.ok()) {
+            return Result<SendFileAcceptedPayload>::failure(accepted.error());
+        }
+        return Result<SendFileAcceptedPayload>::success({accepted.value()});
+    });
+}
+
+Result<std::vector<std::byte>> encode_send_file_result_payload(const SendFileResultPayload& payload)
+{
+    return dump_json(Json{{"success", payload.success},
+                          {"code", error_code_to_protocol(payload.code)},
+                          {"message", payload.message}});
+}
+
+Result<SendFileResultPayload> decode_send_file_result_payload(std::span<const std::byte> bytes)
+{
+    return decode_payload<SendFileResultPayload>(bytes, [](const Json& json) -> Result<SendFileResultPayload> {
+        auto success = required_bool(json, "success");
+        auto code_text = required_string(json, "code");
+        auto message = required_string(json, "message");
+        if (!success.ok()) {
+            return Result<SendFileResultPayload>::failure(success.error());
+        }
+        if (!code_text.ok()) {
+            return Result<SendFileResultPayload>::failure(code_text.error());
+        }
+        if (!message.ok()) {
+            return Result<SendFileResultPayload>::failure(message.error());
+        }
+        auto code = error_code_from_protocol(code_text.value());
+        if (!code.ok()) {
+            return Result<SendFileResultPayload>::failure(code.error());
+        }
+        if (success.value() && code.value() != ErrorCode::Ok) {
+            return Result<SendFileResultPayload>::failure({ErrorCode::InvalidArgument, "successful result must use OK"});
+        }
+        if (!success.value() && code.value() == ErrorCode::Ok) {
+            return Result<SendFileResultPayload>::failure({ErrorCode::InvalidArgument, "failed result must not use OK"});
+        }
+        return Result<SendFileResultPayload>::success(
+            {success.value(), code.value(), std::move(message).value()});
+    });
+}
+
 Result<std::vector<std::byte>> encode_hello_payload(const HelloPayload& payload)
 {
     if (payload.protocol_version != kFrameVersion) {

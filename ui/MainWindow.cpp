@@ -114,6 +114,12 @@ void MainWindow::handle_frame(const protocol::Frame& frame)
     case protocol::MessageType::GetTransferStatusResponse:
         apply_get_transfer_status_response(frame);
         return;
+    case protocol::MessageType::SendFileAccepted:
+        apply_send_file_accepted(frame);
+        return;
+    case protocol::MessageType::SendFileResult:
+        apply_send_file_result(frame);
+        return;
     default:
         return;
     }
@@ -134,9 +140,13 @@ void MainWindow::handle_disconnected()
         return;
     }
     retry_timer_->stop();
+    const bool outgoing_was_pending = pending_send_file_request_id_.has_value();
     invalidate_pending_requests();
     set_scan_active(false);
     transfer_widget_->set_offline_state();
+    if (outgoing_was_pending) {
+        transfer_widget_->show_send_failure(QStringLiteral("Service disconnected during file transfer."));
+    }
     set_connection_state(ConnectionState::Offline);
 }
 
@@ -219,6 +229,10 @@ void MainWindow::set_pending_transfer_request_id_for_testing(protocol::MessageTy
     case protocol::MessageType::GetTransferStatusResponse:
         pending_transfer_status_request_id_ = request_id;
         break;
+    case protocol::MessageType::SendFileAccepted:
+    case protocol::MessageType::SendFileResult:
+        pending_send_file_request_id_ = request_id;
+        break;
     default:
         break;
     }
@@ -291,6 +305,10 @@ void MainWindow::wire_callbacks()
     transfer_widget_->set_receive_directory_selected_callback([this](const QString& path) {
         set_receive_directory(path);
     });
+    transfer_widget_->set_send_file_requested_callback(
+        [this](const QString& file_path, const QString& host, std::uint16_t port) {
+            send_file(file_path, host, port);
+        });
     client_.set_frame_callback([this](const protocol::Frame& frame) {
         handle_frame(frame);
     });
@@ -412,6 +430,18 @@ void MainWindow::request_transfer_status()
     pending_transfer_status_request_id_ = client_.send_get_transfer_status_request();
 }
 
+void MainWindow::send_file(const QString& file_path, const QString& host, std::uint16_t port)
+{
+    if (!client_.is_connected()) {
+        transfer_widget_->set_offline_state();
+        last_error_ = QStringLiteral("CoreDesk service is offline.");
+        set_connection_state(ConnectionState::Offline);
+        return;
+    }
+    pending_send_file_request_id_ = client_.send_file_request(
+        protocol::SendFileRequestPayload{utf8_string(file_path), utf8_string(host), port});
+}
+
 void MainWindow::attempt_connect()
 {
     client_.connect_to_server_async(QStringLiteral("CoreDesk.Service.v1"));
@@ -459,6 +489,7 @@ void MainWindow::invalidate_pending_requests()
     pending_disable_transfer_request_id_.reset();
     pending_set_receive_directory_request_id_.reset();
     pending_transfer_status_request_id_.reset();
+    pending_send_file_request_id_.reset();
 }
 
 void MainWindow::update_status_line()
@@ -603,6 +634,48 @@ void MainWindow::apply_get_transfer_status_response(const protocol::Frame& frame
         transfer_widget_->show_error(QString::fromStdString(decoded.error().message));
     }
     transfer_widget_->set_pending(false);
+}
+
+void MainWindow::apply_send_file_accepted(const protocol::Frame& frame)
+{
+    if (!pending_send_file_request_id_ || frame.request_id != *pending_send_file_request_id_) {
+        return;
+    }
+    auto decoded = protocol::decode_send_file_accepted_payload(frame.payload);
+    if (decoded.ok() && decoded.value().accepted) {
+        transfer_widget_->set_sending(true);
+        return;
+    }
+    pending_send_file_request_id_.reset();
+    if (!apply_transfer_error(frame)) {
+        const auto message = decoded.ok() ? QStringLiteral("Service rejected the send request.")
+                                          : QString::fromStdString(decoded.error().message);
+        transfer_widget_->show_send_failure(message);
+    } else {
+        transfer_widget_->show_send_failure(transfer_widget_->error_text());
+    }
+}
+
+void MainWindow::apply_send_file_result(const protocol::Frame& frame)
+{
+    if (!pending_send_file_request_id_ || frame.request_id != *pending_send_file_request_id_) {
+        return;
+    }
+    pending_send_file_request_id_.reset();
+    auto decoded = protocol::decode_send_file_result_payload(frame.payload);
+    if (!decoded.ok()) {
+        if (!apply_transfer_error(frame)) {
+            transfer_widget_->show_send_failure(QString::fromStdString(decoded.error().message));
+        } else {
+            transfer_widget_->show_send_failure(transfer_widget_->error_text());
+        }
+        return;
+    }
+    if (decoded.value().success) {
+        transfer_widget_->show_send_success();
+    } else {
+        transfer_widget_->show_send_failure(QString::fromStdString(decoded.value().message));
+    }
 }
 
 bool MainWindow::apply_transfer_error(const protocol::Frame& frame)

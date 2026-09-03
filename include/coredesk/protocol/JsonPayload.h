@@ -95,6 +95,22 @@ struct GetTransferStatusResponsePayload {
     std::uint64_t active_transfers{};
 };
 
+struct SendFileRequestPayload {
+    std::string file_path;
+    std::string host;
+    std::uint16_t port{};
+};
+
+struct SendFileAcceptedPayload {
+    bool accepted{false};
+};
+
+struct SendFileResultPayload {
+    bool success{false};
+    ErrorCode code{ErrorCode::Ok};
+    std::string message;
+};
+
 struct HelloPayload {
     std::uint32_t protocol_version{1};
     std::string node_name;
@@ -190,6 +206,15 @@ Result<GetTransferStatusRequestPayload> decode_get_transfer_status_request_paylo
 Result<std::vector<std::byte>> encode_get_transfer_status_response_payload(
     const GetTransferStatusResponsePayload& payload);
 Result<GetTransferStatusResponsePayload> decode_get_transfer_status_response_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_send_file_request_payload(const SendFileRequestPayload& payload);
+Result<SendFileRequestPayload> decode_send_file_request_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_send_file_accepted_payload(const SendFileAcceptedPayload& payload);
+Result<SendFileAcceptedPayload> decode_send_file_accepted_payload(std::span<const std::byte> bytes);
+
+Result<std::vector<std::byte>> encode_send_file_result_payload(const SendFileResultPayload& payload);
+Result<SendFileResultPayload> decode_send_file_result_payload(std::span<const std::byte> bytes);
 
 Result<std::vector<std::byte>> encode_hello_payload(const HelloPayload& payload);
 Result<HelloPayload> decode_hello_payload(std::span<const std::byte> bytes);

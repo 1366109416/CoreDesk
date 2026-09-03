@@ -17,6 +17,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -176,6 +177,13 @@ coredesk::qt_ipc::TransferManagementHandlers transfer_handlers_for(TransferManag
             const auto status = manager.status();
             return coredesk::Result<coredesk::protocol::GetTransferStatusResponsePayload>::success(
                 {status.enabled, status.port, path_to_utf8_string(status.receive_directory), status.active_transfers});
+        },
+        [&manager](const coredesk::protocol::SendFileRequestPayload& payload,
+                   coredesk::qt_ipc::TransferManagementHandlers::SendFileCompletion completion) {
+            return manager.send_file(path_from_utf8_string(payload.file_path),
+                                     payload.host,
+                                     payload.port,
+                                     std::move(completion));
         }};
 }
 
@@ -836,4 +844,197 @@ TEST(LocalIpcIntegrationTest, LocalIpcDisconnectDoesNotStopLanReceiver)
     QLocalServer::removeServer(name);
 }
 
+TEST(LocalIpcIntegrationTest, InvalidOutgoingFileReturnsCorrelatedAcceptedError)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+    TempDirectory temp;
+
+    ServiceController controller;
+    TransferManager manager;
+    LocalIpcServer server(controller);
+    server.set_transfer_management_handlers(transfer_handlers_for(manager));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const auto request_id = client.send_file_request(
+        {path_to_utf8_string(temp.path() / "missing.bin"), "127.0.0.1", 45827});
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+    ASSERT_EQ(frames[0].type, MessageType::SendFileAccepted);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto error = coredesk::protocol::decode_error_response_payload(frames[0].payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::PathNotFound);
+    EXPECT_FALSE(manager.outgoing_active());
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, BusyOutgoingHandlerReturnsCorrelatedError)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    LocalIpcServer server(controller);
+    coredesk::qt_ipc::TransferManagementHandlers handlers;
+    handlers.send_file = [](const coredesk::protocol::SendFileRequestPayload&,
+                            coredesk::qt_ipc::TransferManagementHandlers::SendFileCompletion) {
+        return coredesk::Result<void>::failure({ErrorCode::Busy, "outgoing transfer busy"});
+    };
+    server.set_transfer_management_handlers(std::move(handlers));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) {
+        frames.push_back(frame);
+    });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+    const auto request_id = client.send_file_request({"C:/file.bin", "127.0.0.1", 45827});
+    ASSERT_TRUE(wait_until([&] {
+        return !frames.empty();
+    }));
+    ASSERT_EQ(frames[0].type, MessageType::SendFileAccepted);
+    EXPECT_EQ(frames[0].request_id, request_id);
+    auto error = coredesk::protocol::decode_error_response_payload(frames[0].payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::Busy);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
 #endif
+
+TEST(LocalIpcIntegrationTest, InvalidOutgoingHostIsRejectedAndNextRequestIsAccepted)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    LocalIpcServer server(controller);
+    int handler_calls = 0;
+    coredesk::qt_ipc::TransferManagementHandlers handlers;
+    handlers.send_file = [&](const coredesk::protocol::SendFileRequestPayload&,
+                             coredesk::qt_ipc::TransferManagementHandlers::SendFileCompletion completion) {
+        ++handler_calls;
+        completion(coredesk::Result<void>::success());
+        return coredesk::Result<void>::success();
+    };
+    server.set_transfer_management_handlers(std::move(handlers));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) { frames.push_back(frame); });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    constexpr coredesk::RequestId invalid_id = 7001;
+    ASSERT_TRUE(client.send_frame(Frame{MessageType::SendFileRequest,
+                                        0,
+                                        invalid_id,
+                                        text_bytes("{\"file_path\":\"C:/source.bin\",\"host\":\"\",\"port\":45827}")})
+                    .ok());
+    ASSERT_TRUE(wait_until([&] {
+        return std::any_of(frames.begin(), frames.end(), [](const Frame& frame) {
+            return frame.request_id == invalid_id && frame.type == MessageType::SendFileAccepted;
+        });
+    }));
+    const auto invalid = std::find_if(frames.begin(), frames.end(), [](const Frame& frame) {
+        return frame.request_id == invalid_id && frame.type == MessageType::SendFileAccepted;
+    });
+    ASSERT_NE(invalid, frames.end());
+    auto error = coredesk::protocol::decode_error_response_payload(invalid->payload);
+    ASSERT_TRUE(error.ok());
+    EXPECT_EQ(error.value().code, ErrorCode::InvalidArgument);
+    EXPECT_EQ(handler_calls, 0);
+
+    const auto valid_id = client.send_file_request({"C:/source.bin", "127.0.0.1", 45827});
+    ASSERT_TRUE(wait_until([&] {
+        return std::any_of(frames.begin(), frames.end(), [valid_id](const Frame& frame) {
+            return frame.request_id == valid_id && frame.type == MessageType::SendFileResult;
+        });
+    }));
+    EXPECT_EQ(handler_calls, 1);
+    EXPECT_TRUE(std::any_of(frames.begin(), frames.end(), [valid_id](const Frame& frame) {
+        return frame.request_id == valid_id && frame.type == MessageType::SendFileAccepted;
+    }));
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}
+
+TEST(LocalIpcIntegrationTest, InvalidOutgoingPortsAreRejectedWithoutTruncationAndNextRequestIsAccepted)
+{
+    app();
+    const auto name = QString::fromStdString(unique_server_name());
+    QLocalServer::removeServer(name);
+
+    ServiceController controller;
+    LocalIpcServer server(controller);
+    int handler_calls = 0;
+    coredesk::qt_ipc::TransferManagementHandlers handlers;
+    handlers.send_file = [&](const coredesk::protocol::SendFileRequestPayload&,
+                             coredesk::qt_ipc::TransferManagementHandlers::SendFileCompletion completion) {
+        ++handler_calls;
+        completion(coredesk::Result<void>::success());
+        return coredesk::Result<void>::success();
+    };
+    server.set_transfer_management_handlers(std::move(handlers));
+    ASSERT_TRUE(server.listen(name).ok());
+
+    LocalIpcClient client;
+    std::vector<Frame> frames;
+    client.set_frame_callback([&](const Frame& frame) { frames.push_back(frame); });
+    ASSERT_TRUE(client.connect_to_server(name).ok());
+
+    const std::array<std::pair<coredesk::RequestId, std::string_view>, 2> invalid_requests{{
+        {7101, "{\"file_path\":\"C:/source.bin\",\"host\":\"127.0.0.1\",\"port\":0}"},
+        {7102, "{\"file_path\":\"C:/source.bin\",\"host\":\"127.0.0.1\",\"port\":65536}"},
+    }};
+    for (const auto& [request_id, json] : invalid_requests) {
+        ASSERT_TRUE(client.send_frame(
+            Frame{MessageType::SendFileRequest, 0, request_id, text_bytes(json)}).ok());
+        ASSERT_TRUE(wait_until([&] {
+            return std::any_of(frames.begin(), frames.end(), [request_id](const Frame& frame) {
+                return frame.request_id == request_id && frame.type == MessageType::SendFileAccepted;
+            });
+        }));
+        const auto response = std::find_if(frames.begin(), frames.end(), [request_id](const Frame& frame) {
+            return frame.request_id == request_id && frame.type == MessageType::SendFileAccepted;
+        });
+        ASSERT_NE(response, frames.end());
+        auto error = coredesk::protocol::decode_error_response_payload(response->payload);
+        ASSERT_TRUE(error.ok());
+        EXPECT_EQ(error.value().code, ErrorCode::InvalidArgument);
+    }
+    EXPECT_EQ(handler_calls, 0);
+
+    const auto valid_id = client.send_file_request({"C:/source.bin", "127.0.0.1", 45827});
+    ASSERT_TRUE(wait_until([&] {
+        return std::any_of(frames.begin(), frames.end(), [valid_id](const Frame& frame) {
+            return frame.request_id == valid_id && frame.type == MessageType::SendFileResult;
+        });
+    }));
+    EXPECT_EQ(handler_calls, 1);
+
+    client.disconnect_from_server();
+    server.close();
+    QLocalServer::removeServer(name);
+}

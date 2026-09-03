@@ -51,6 +51,9 @@ Message type values are fixed wire values and must not be renumbered.
 45   SetReceiveDirectoryResponse
 46   GetTransferStatusRequest
 47   GetTransferStatusResponse
+48   SendFileRequest
+49   SendFileAccepted
+50   SendFileResult
 100  Hello
 101  HelloAck
 110  FileOffer
@@ -178,6 +181,62 @@ by the service transfer manager.
   "active_transfers": 0
 }
 ```
+
+### Local IPC Outgoing File Transfer
+
+M8-A adds a single-file outgoing request from Desktop to Service. These are
+Local IPC management messages only; the existing TCP transfer messages and
+their wire values are unchanged.
+
+`SendFileRequest`:
+
+```json
+{
+  "file_path": "D:/files/report.pdf",
+  "host": "192.0.2.10",
+  "port": 45827
+}
+```
+
+`file_path` and `host` must be non-empty strings, and `port` must be in the
+range 1 through 65535. The service additionally verifies that `file_path`
+exists, is a regular file, and is readable. Only one outgoing transfer is
+accepted at a time.
+
+`SendFileAccepted`:
+
+```json
+{
+  "accepted": true
+}
+```
+
+An invalid or busy request returns the standard error-response payload using
+message type `SendFileAccepted`. A successfully accepted request later produces
+exactly one terminal `SendFileResult` with the same frame `request_id`.
+
+`SendFileResult` success:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": ""
+}
+```
+
+`SendFileResult` failure:
+
+```json
+{
+  "success": false,
+  "code": "TARGET_EXISTS",
+  "message": "target file already exists"
+}
+```
+
+The Desktop correlates both accepted and terminal responses by `request_id`.
+No progress or cancellation event is defined for M8-A.
 
 `active_transfers` is the real count exposed by the current
 `TcpTransferServer` single-active-receive model: `0` when no receive is active,

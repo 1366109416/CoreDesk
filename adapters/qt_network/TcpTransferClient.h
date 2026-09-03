@@ -29,6 +29,7 @@ public:
     using FileRejectCallback = std::function<void(RequestId, const protocol::FileRejectPayload&)>;
     using FileResultCallback = std::function<void(RequestId, const protocol::FileResultPayload&)>;
     using ErrorCallback = std::function<void(const Error&)>;
+    using DisconnectedCallback = std::function<void()>;
 
     enum class TransferState {
         Idle,
@@ -56,6 +57,7 @@ public:
     void set_file_reject_callback(FileRejectCallback callback);
     void set_file_result_callback(FileResultCallback callback);
     void set_error_callback(ErrorCallback callback);
+    void set_disconnected_callback(DisconnectedCallback callback);
     void set_logger(Logger* logger) noexcept;
 
     void connect_to_host(const QString& host, quint16 port);
@@ -124,6 +126,7 @@ private:
     FileRejectCallback file_reject_callback_;
     FileResultCallback file_result_callback_;
     ErrorCallback error_callback_;
+    DisconnectedCallback disconnected_callback_;
     Logger* logger_{};
 };
 

@@ -101,6 +101,9 @@ bool is_known_message_type(MessageType type) noexcept
     case MessageType::SetReceiveDirectoryResponse:
     case MessageType::GetTransferStatusRequest:
     case MessageType::GetTransferStatusResponse:
+    case MessageType::SendFileRequest:
+    case MessageType::SendFileAccepted:
+    case MessageType::SendFileResult:
     case MessageType::Hello:
     case MessageType::HelloAck:
     case MessageType::FileOffer:

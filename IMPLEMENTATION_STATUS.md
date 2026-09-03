@@ -1,11 +1,38 @@
 # CoreDesk Implementation Status
 
 ## Current Milestone
-M7 - Transfer Management (DONE)
+M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
+
+M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
 
 Pre-M8 Stability Corrective Pass (DONE)
 
 ## Completed
+- Implemented the M8-A single-file outgoing path from Desktop through Local IPC
+  and the service-owned `TransferManager` to the existing bounded-memory
+  `TcpTransferClient`.
+- Added correlated Local IPC `SendFileRequest`, `SendFileAccepted`, and
+  `SendFileResult` messages without changing the TCP transfer protocol.
+- Added minimal Desktop file/host/port controls and Ready, Sending, Sent, and
+  Error states; progress, cancellation, queuing, and transfer history remain
+  intentionally out of scope.
+- Added automated protocol, payload, Local IPC, TransferManager, Desktop, and
+  end-to-end loopback coverage, including multi-chunk SHA verification, Busy,
+  connection failure recovery, TargetExists recovery, and repeat sends.
+- Completed the Windows Desktop manual outgoing-transfer smoke against
+  `127.0.0.1:45827`:
+  - Normal localhost send passed from
+    `D:\Temp\CoreDeskSmoke\send\smoke-1.txt` to
+    `D:\Temp\CoreDeskSmoke\receive\smoke-1.txt`; source and received SHA-256
+    both equal `F66BF0D9CC00521B787046873C5A29F3831818F4EC5E525CDBDCE87CACCBAFC0`.
+  - Re-sending `smoke-1.txt` passed the TargetExists check and displayed
+    `target file already exists`.
+  - Sending to port `45828` passed the failure-path check and displayed
+    `Connection refused`; the application did not crash or hang and the send UI
+    remained usable.
+  - Retrying on `127.0.0.1:45827` passed for `smoke-2.txt`; source and received
+    SHA-256 both equal
+    `CBB94D493FC2591BA7BDC3E2C3CD8D54CD978F14AD37FCAC9383875519565BD6`.
 - Preserved M0-M6 behavior, including CLI, scanner/index/search tests, FrameProtocol tests, Service + Local IPC integration tests, Qt Desktop UI tests, and TCP loopback transfer tests.
 - Reused the existing M3 `FrameProtocol` for all Local IPC transfer-management messages and TCP LAN transfer messages.
 - Implemented M6 TCP LAN transfer:
@@ -157,9 +184,9 @@ Pre-M8 Stability Corrective Pass (DONE)
   - Local IPC disconnect invalidates pending transfer status response.
 
 ## Known Issues
-- `TcpTransferClient::send_file()` starts an async hash worker before the real `FileOffer` request is sent. It returns success with a sentinel request id rather than the final `FileOffer` request id. Callback-based transfer completion works, but future Desktop send workflow may need clearer request-id semantics.
+- `TcpTransferClient::send_file()` starts an async hash worker before the real `FileOffer` request is sent. M8-A keeps Desktop correlation at the Local IPC `request_id` boundary and uses callbacks for TCP completion; the internal `FileOffer` id is not exposed to Desktop.
 - The default receive directory remains `temp/CoreDeskReceived` until the user changes it through the M7 Desktop control.
-- Desktop transfer sending workflow is not implemented in this M7 step. There is no Send File button, peer list, device discovery, transfer progress UI, transfer history, or persistent settings.
+- M8-A provides one explicit file and one manually entered host/port per send. Peer lists, discovery, outgoing progress/cancel, transfer history, queuing, and persistent target settings are not implemented.
 - Qt runtime tests require `D:\Qt\6.11.2\msvc2022_64\bin` on the current process `PATH`, so that Qt Debug DLLs can be found. Qt DLLs were not copied into the project or system directories.
 - Fresh FetchContent downloads from GitHub may fail in the current environment due TLS credential/network reset errors. Reusing the existing local FetchContent source cache allowed configure/build/test verification to complete.
 - The M3 non-blocking performance note remains: `FrameDecoder::push()` uses `vector::erase(begin, ...)`, which can add data movement for many tiny frames.
@@ -203,8 +230,8 @@ Status: DONE
 
 ### Latest Windows regression
 
-- Debug build with `COREDESK_BUILD_NETWORK=ON`, `COREDESK_BUILD_UI=OFF`, and tests enabled: PASS.
-- CTest: 128 total, 126 passed, 0 failed, 2 skipped.
+- Debug build with `COREDESK_BUILD_NETWORK=ON`, `COREDESK_BUILD_UI=ON`, and tests enabled: PASS.
+- CTest: 132 total, 130 passed, 0 failed, 2 skipped.
 - Skips remain the two Windows directory-symlink environment cases closed by Linux coverage.
 
 ## Corrective Known Finding
@@ -215,7 +242,7 @@ Status: DONE
 
 - Logger file rotation/retention is not implemented.
 - Outgoing transfer progress, cancel, and timeout behavior remain deferred.
-- Desktop Send File and outgoing-transfer Local IPC remain deferred product features.
+- Outgoing transfer history, queuing, peer discovery, and persistent target settings remain deferred product features.
 - Receiver QFile write and incremental hash remain on the Qt event thread; workerization is deferred unless future isolated evidence justifies it.
 - `FrameDecoder::push()` front erase may be optimized if many-tiny-frame profiling justifies the change.
 - Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification remain for the formal cross-platform milestone.
@@ -256,4 +283,4 @@ Status: DONE
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8 - Cross-platform Support + Portfolio/Interview Packaging (NOT STARTED)
+M8-B. M8 remains in progress and is not yet complete.

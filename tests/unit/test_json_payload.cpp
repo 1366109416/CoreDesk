@@ -478,3 +478,53 @@ TEST(JsonPayloadTest, TransferStatusRejectsOutOfRangeNumbers)
     ASSERT_FALSE(wrong_active_type.ok());
     EXPECT_EQ(wrong_active_type.error().code, ErrorCode::InvalidArgument);
 }
+
+TEST(JsonPayloadTest, SendFilePayloadsRoundtrip)
+{
+    SendFileRequestPayload request{"D:/source/report.bin", "127.0.0.1", 45827};
+    auto encoded_request = encode_send_file_request_payload(request);
+    ASSERT_TRUE(encoded_request.ok());
+    auto decoded_request = decode_send_file_request_payload(encoded_request.value());
+    ASSERT_TRUE(decoded_request.ok());
+    EXPECT_EQ(decoded_request.value().file_path, request.file_path);
+    EXPECT_EQ(decoded_request.value().host, request.host);
+    EXPECT_EQ(decoded_request.value().port, request.port);
+
+    auto accepted = encode_send_file_accepted_payload({true});
+    ASSERT_TRUE(accepted.ok());
+    auto decoded_accepted = decode_send_file_accepted_payload(accepted.value());
+    ASSERT_TRUE(decoded_accepted.ok());
+    EXPECT_TRUE(decoded_accepted.value().accepted);
+
+    auto result = encode_send_file_result_payload({false, ErrorCode::TargetExists, "target exists"});
+    ASSERT_TRUE(result.ok());
+    auto decoded_result = decode_send_file_result_payload(result.value());
+    ASSERT_TRUE(decoded_result.ok());
+    EXPECT_FALSE(decoded_result.value().success);
+    EXPECT_EQ(decoded_result.value().code, ErrorCode::TargetExists);
+    EXPECT_EQ(decoded_result.value().message, "target exists");
+}
+
+TEST(JsonPayloadTest, SendFileRequestRejectsInvalidFields)
+{
+    EXPECT_FALSE(encode_send_file_request_payload({"", "127.0.0.1", 45827}).ok());
+    EXPECT_FALSE(encode_send_file_request_payload({"D:/file.bin", "", 45827}).ok());
+    EXPECT_FALSE(encode_send_file_request_payload({"D:/file.bin", "127.0.0.1", 0}).ok());
+
+    EXPECT_FALSE(decode_send_file_request_payload(bytes_from_text("{}" )).ok());
+    EXPECT_FALSE(decode_send_file_request_payload(
+        bytes_from_text("{\"file_path\":\"x\",\"host\":\"h\",\"port\":0}")).ok());
+    EXPECT_FALSE(decode_send_file_request_payload(
+        bytes_from_text("{\"file_path\":\"x\",\"host\":\"h\",\"port\":65536}")).ok());
+}
+
+TEST(JsonPayloadTest, SendFileResultRequiresConsistentSuccessAndCode)
+{
+    auto success_with_error = decode_send_file_result_payload(
+        bytes_from_text("{\"success\":true,\"code\":\"IO_ERROR\",\"message\":\"bad\"}"));
+    EXPECT_FALSE(success_with_error.ok());
+
+    auto failure_with_ok = decode_send_file_result_payload(
+        bytes_from_text("{\"success\":false,\"code\":\"OK\",\"message\":\"bad\"}"));
+    EXPECT_FALSE(failure_with_ok.ok());
+}
