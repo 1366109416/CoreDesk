@@ -3,6 +3,13 @@
 ## Current Milestone
 M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
 
+M8-C - Portfolio / Presentation Closure (IN PROGRESS)
+
+- Documentation implementation: COMPLETE.
+- Manual portfolio demo rehearsal: PASS.
+- Remote presentation verification: PENDING.
+- M8-D: NOT STARTED.
+
 M8-B - Cross-platform / Build Closure (CLOSED)
 
 M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
@@ -10,6 +17,28 @@ M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
 Pre-M8 Stability Corrective Pass (DONE)
 
 ## Completed
+- Completed the prepared M8-C portfolio demo rehearsal using the verified
+  Windows full-application build:
+  - The prepared 1–2 minute scan/search and loopback-transfer walkthrough was
+    rehearsed successfully in an observed 48 seconds. This is one manual GUI
+    operation duration, not a benchmark, guarantee, or performance SLA.
+  - Scan: PASS.
+  - Search: PASS. The keyword `alpha` displayed the expected
+    `coredesk_alpha_report.txt` result.
+  - LAN receiver: PASS. It reached `Enabled` on the observed port `45827`.
+  - Outgoing transfer: PASS to `127.0.0.1:45827`; the terminal UI state was
+    `Sent`, the destination file existed, and source/destination SHA-256
+    matched.
+  - Optional TargetExists retry: PASS. It was not part of the timed main flow.
+  - Timed-rehearsal errors or corrective actions: NONE.
+  - `127.0.0.1` was used as a deterministic single-machine demonstration of
+    the real TCP transfer path; this does not verify two-machine LAN
+    interoperability.
+- M8-C documentation implementation is complete, but M8-C remains in progress
+  pending final audit, commit/push workflow, and remote README/link/Mermaid
+  presentation verification. No automated test, sanitizer, or benchmark was
+  rerun for this documentation/evidence-only update; automated revalidation is
+  not required.
 - Completed M8-B build and platform documentation in `docs/BUILD.md`:
   - documented the four Windows UI/network feature combinations;
   - documented reproducible Windows full, Linux Core-only, and Linux ASan
