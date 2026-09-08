@@ -3,11 +3,11 @@
 ## Current Milestone
 M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
 
-M8-C - Portfolio / Presentation Closure (IN PROGRESS)
+M8-C - Portfolio / Presentation Closure (CLOSED)
 
 - Documentation implementation: COMPLETE.
 - Manual portfolio demo rehearsal: PASS.
-- Remote presentation verification: PENDING.
+- Remote presentation verification: PASS.
 - M8-D: NOT STARTED.
 
 M8-B - Cross-platform / Build Closure (CLOSED)
@@ -34,10 +34,19 @@ Pre-M8 Stability Corrective Pass (DONE)
   - `127.0.0.1` was used as a deterministic single-machine demonstration of
     the real TCP transfer path; this does not verify two-machine LAN
     interoperability.
-- M8-C documentation implementation is complete, but M8-C remains in progress
-  pending final audit, commit/push workflow, and remote README/link/Mermaid
-  presentation verification. No automated test, sanitizer, or benchmark was
-  rerun for this documentation/evidence-only update; automated revalidation is
+- Completed M8-C remote presentation verification on the pushed GitHub branch:
+  - README landing-page rendering and documentation navigation: PASS.
+  - `docs/ARCHITECTURE.md` rendering: PASS; all 4 architecture Mermaid diagrams
+    rendered successfully.
+  - `docs/PROTOCOL.md` rendering: PASS; both protocol Mermaid diagrams rendered
+    successfully.
+  - `docs/DEMO.md` and links to `docs/BUILD.md`, `docs/PERFORMANCE.md`,
+    `docs/BUG_POSTMORTEM.md`, and `IMPLEMENTATION_STATUS.md`: PASS.
+  - Total Mermaid rendering: 6/6 PASS; no syntax or obvious remote display
+    error was observed.
+- M8-C documentation implementation, manual rehearsal, and remote presentation
+  verification are complete. No automated test, sanitizer, or benchmark was
+  rerun for this documentation/status-only closure; automated revalidation is
   not required.
 - Completed M8-B build and platform documentation in `docs/BUILD.md`:
   - documented the four Windows UI/network feature combinations;
@@ -323,4 +332,4 @@ Status: DONE
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8-C. M8 remains in progress and v1.0 is not yet complete.
+M8-D (NOT STARTED). M8 remains in progress and v1.0 is not yet complete.
