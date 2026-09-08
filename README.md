@@ -92,6 +92,15 @@ The full application is verified on Windows 11 with Visual Studio 2022 and Qt
 [Build and Platform Verification Guide](docs/BUILD.md) for dependencies,
 copyable commands, feature combinations, and tested boundaries.
 
+For a minimal Core-only test run from the repository root on Linux with the
+documented compiler, CMake, Ninja, and dependency prerequisites installed:
+
+```bash
+cmake -S . -B build-core -G Ninja -DCOREDESK_BUILD_UI=OFF -DCOREDESK_BUILD_NETWORK=OFF -DCOREDESK_BUILD_TESTS=ON
+cmake --build build-core --parallel
+ctest --test-dir build-core --output-on-failure
+```
+
 For a short scan/search and loopback file-transfer walkthrough, use the
 [1–2 minute Demo Guide](docs/DEMO.md).
 
