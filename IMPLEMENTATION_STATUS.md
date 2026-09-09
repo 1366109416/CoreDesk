@@ -1,14 +1,25 @@
 # CoreDesk Implementation Status
 
 ## Current Milestone
-M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
+CoreDesk v1.0 implementation, validation, and merge closure (DONE)
+
+M8 - Cross-platform Support + Portfolio/Interview Packaging (DONE / CLOSED)
+
+M8-D - Final v1.0 Closure / PR Readiness (CLOSED)
+
+- M8-D is an internal final-closure phase, not an additional product milestone
+  defined by `docs/COREDESK_SPEC.md`.
+- Normative M8 DoD: PASS.
+- Normative v1.0 DoD: 19/19 PASS.
+- Second-platform requirement: PASS.
+- Unresolved normative MUST mismatches: NONE.
 
 M8-C - Portfolio / Presentation Closure (CLOSED)
 
 - Documentation implementation: COMPLETE.
 - Manual portfolio demo rehearsal: PASS.
 - Remote presentation verification: PASS.
-- M8-D: NOT STARTED.
+- M8-D final closure: CLOSED.
 
 M8-B - Cross-platform / Build Closure (CLOSED)
 
@@ -17,6 +28,27 @@ M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
 Pre-M8 Stability Corrective Pass (DONE)
 
 ## Completed
+- Completed the final v1.0 merge and main verification closure:
+  - Final M8 PR: `#8`, `feat: add outgoing transfer and complete
+    cross-platform portfolio closure`.
+  - PR status: MERGED using a merge commit.
+  - Merge commit: `0047ea8651c307ef1ef368b2e5f2597100dcaa36`.
+  - Merged feature head: `11ce43e76be47228bc2adf553c0a4532c5e84953`.
+  - Main verification: PASS.
+  - `origin/main` synchronization: PASS.
+  - Feature HEAD is an ancestor of `main`: YES.
+  - Final retained validation evidence: Windows full CTest 132 total, 130
+    passed, 0 failed, 2 environment skips; post-M8-A Linux Core regression
+    130/130 passed; historical Linux ASan/LSan 127/127 passed clean. The ASan
+    evidence predates the final M8-A Core protocol changes and is not presented
+    as a post-M8-A sanitizer run.
+  - M8-D completed the final v1.0 readiness audit, README DoD fix, final
+    PR-readiness audit, PR #8 audit, merge-to-main verification, and final
+    status closure.
+  - No automated test, sanitizer, benchmark, or GUI smoke was rerun for this
+    status-only closure; automated revalidation is not required.
+  - Git tag: NOT CREATED / OPTIONAL.
+  - GitHub Release: NOT CREATED / OPTIONAL.
 - Completed the prepared M8-C portfolio demo rehearsal using the verified
   Windows full-application build:
   - The prepared 1–2 minute scan/search and loopback-transfer walkthrough was
@@ -332,4 +364,6 @@ Status: DONE
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8-D (NOT STARTED). M8 remains in progress and v1.0 is not yet complete.
+None. CoreDesk v1.0 is DONE, M8 is DONE / CLOSED, and M8-D is CLOSED.
+v1.1 is NOT STARTED. Optional tag, GitHub Release, GitHub About wording, and
+branch cleanup remain separate post-closure actions.
