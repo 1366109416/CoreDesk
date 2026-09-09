@@ -1,6 +1,7 @@
 #include "TransferManager.h"
 
 #include <iostream>
+#include <fstream>
 #include <system_error>
 
 
@@ -60,7 +61,11 @@ TransferManager::~TransferManager()
 
 void TransferManager::set_logger(Logger* logger) noexcept
 {
+    logger_ = logger;
     tcp_server_.set_logger(logger);
+    if (tcp_client_) {
+        tcp_client_->set_logger(logger);
+    }
 }
 
 
@@ -94,6 +99,9 @@ Result<void> TransferManager::start()
 
 void TransferManager::stop()
 {
+    if (outgoing_active_) {
+        finish_outgoing(Result<void>::failure({ErrorCode::Cancelled, "LAN transfer stopped"}));
+    }
     tcp_server_.close();
 }
 
@@ -136,6 +144,113 @@ std::uint64_t TransferManager::active_transfer_count() const
 TransferStatus TransferManager::status() const
 {
     return TransferStatus{enabled(), listening_port(), receive_directory_, active_transfer_count()};
+}
+
+Result<void> TransferManager::send_file(std::filesystem::path file_path,
+                                        std::string host,
+                                        std::uint16_t port,
+                                        OutgoingCompletion completion)
+{
+    if (outgoing_active_) {
+        return Result<void>::failure({ErrorCode::Busy, "an outgoing transfer is already active"});
+    }
+    if (file_path.empty()) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "file path must not be empty"});
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(file_path, ec)) {
+        return Result<void>::failure(ec ? filesystem_error(ec) : Error{ErrorCode::PathNotFound, "file does not exist"});
+    }
+    if (!std::filesystem::is_regular_file(file_path, ec)) {
+        return Result<void>::failure(ec ? filesystem_error(ec) : Error{ErrorCode::InvalidArgument, "path is not a regular file"});
+    }
+    std::ifstream readable(file_path, std::ios::binary);
+    if (!readable.is_open()) {
+        return Result<void>::failure({ErrorCode::PermissionDenied, "file is not readable"});
+    }
+    if (host.empty()) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "host must not be empty"});
+    }
+    if (port == 0) {
+        return Result<void>::failure({ErrorCode::InvalidArgument, "port must be in range 1..65535"});
+    }
+
+    tcp_client_ = std::make_unique<coredesk::qt_network::TcpTransferClient>(QStringLiteral("CoreDeskService"));
+    tcp_client_->set_logger(logger_);
+    outgoing_active_ = true;
+    outgoing_file_path_ = std::move(file_path);
+    outgoing_completion_ = std::move(completion);
+
+    tcp_client_->set_handshake_callback([this]() {
+#ifdef _WIN32
+        const auto path = QString::fromStdWString(outgoing_file_path_.wstring());
+#else
+        const auto path = QString::fromStdString(outgoing_file_path_.string());
+#endif
+        auto started = tcp_client_->send_file(path);
+        if (!started.ok()) {
+            finish_outgoing(Result<void>::failure(started.error()));
+        }
+    });
+    tcp_client_->set_file_reject_callback([this](RequestId, const protocol::FileRejectPayload& reject) {
+        finish_outgoing(Result<void>::failure({reject.code, reject.message}));
+    });
+    tcp_client_->set_file_result_callback([this](RequestId, const protocol::FileResultPayload& result) {
+        if (result.ok) {
+            finish_outgoing(Result<void>::success());
+        } else {
+            finish_outgoing(Result<void>::failure({result.code, result.message}));
+        }
+    });
+    tcp_client_->set_error_callback([this](const Error& error) {
+        finish_outgoing(Result<void>::failure(error));
+    });
+    tcp_client_->set_disconnected_callback([this]() {
+        if (outgoing_active_) {
+            finish_outgoing(Result<void>::failure({ErrorCode::ConnectionFailed, "connection closed before transfer completed"}));
+        }
+    });
+
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "network",
+                     "outgoing request accepted target=" + host + ":" + std::to_string(port) +
+                         " file=" + outgoing_file_path_.filename().string());
+    }
+    tcp_client_->connect_to_host(QString::fromUtf8(host.data(), static_cast<qsizetype>(host.size())), port);
+    return Result<void>::success();
+}
+
+bool TransferManager::outgoing_active() const noexcept
+{
+    return outgoing_active_;
+}
+
+void TransferManager::finish_outgoing(Result<void> result)
+{
+    if (!outgoing_active_) {
+        return;
+    }
+    outgoing_active_ = false;
+    auto completion = std::move(outgoing_completion_);
+    outgoing_completion_ = {};
+    outgoing_file_path_.clear();
+    if (tcp_client_) {
+        tcp_client_->disconnect_from_host();
+    }
+    if (logger_) {
+        if (result.ok()) {
+            logger_->log(LogLevel::Info, "network", "outgoing transfer success error_code=Ok");
+        } else {
+            logger_->log(LogLevel::Error,
+                         "network",
+                         "outgoing transfer fail error_code=" + std::string(to_string(result.error().code)) +
+                             " message=" + result.error().message);
+        }
+    }
+    if (completion) {
+        completion(std::move(result));
+    }
 }
 
 

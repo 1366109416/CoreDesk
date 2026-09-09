@@ -293,6 +293,9 @@ TEST(FrameProtocolTest, M7TransferManagementMessageTypesAreKnown)
         {MessageType::SetReceiveDirectoryResponse, 45},
         {MessageType::GetTransferStatusRequest, 46},
         {MessageType::GetTransferStatusResponse, 47},
+        {MessageType::SendFileRequest, 48},
+        {MessageType::SendFileAccepted, 49},
+        {MessageType::SendFileResult, 50},
     };
 
     for (const auto& [type, wire] : types) {

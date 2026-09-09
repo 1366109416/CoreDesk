@@ -61,6 +61,7 @@ private:
     void disable_lan_transfer();
     void set_receive_directory(const QString& path);
     void request_transfer_status();
+    void send_file(const QString& file_path, const QString& host, std::uint16_t port);
     void attempt_connect();
     void start_service_process();
     QString service_executable_path() const;
@@ -77,6 +78,8 @@ private:
     void apply_disable_lan_transfer_response(const protocol::Frame& frame);
     void apply_set_receive_directory_response(const protocol::Frame& frame);
     void apply_get_transfer_status_response(const protocol::Frame& frame);
+    void apply_send_file_accepted(const protocol::Frame& frame);
+    void apply_send_file_result(const protocol::Frame& frame);
     bool apply_transfer_error(const protocol::Frame& frame);
     void sync_transfer_status_after_operation();
 
@@ -101,6 +104,7 @@ private:
     std::optional<RequestId> pending_disable_transfer_request_id_;
     std::optional<RequestId> pending_set_receive_directory_request_id_;
     std::optional<RequestId> pending_transfer_status_request_id_;
+    std::optional<RequestId> pending_send_file_request_id_;
     QString last_error_;
     std::uint64_t file_count_{0};
     std::uint64_t generation_{0};

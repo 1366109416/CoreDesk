@@ -22,12 +22,14 @@ namespace coredesk::qt_ipc {
 inline constexpr const char* kLocalServerName = "CoreDesk.Service.v1";
 
 struct TransferManagementHandlers {
+    using SendFileCompletion = std::function<void(Result<void>)>;
     std::function<Result<protocol::EnableLanTransferResponsePayload>()> enable;
     std::function<Result<protocol::DisableLanTransferResponsePayload>()> disable;
     std::function<Result<protocol::SetReceiveDirectoryResponsePayload>(
         const protocol::SetReceiveDirectoryRequestPayload&)>
         set_receive_directory;
     std::function<Result<protocol::GetTransferStatusResponsePayload>()> status;
+    std::function<Result<void>(const protocol::SendFileRequestPayload&, SendFileCompletion)> send_file;
 };
 
 class LocalIpcServer : public QObject {
@@ -56,6 +58,7 @@ private:
     void dispatch_disable_lan_transfer_request(QLocalSocket* socket, const protocol::Frame& frame);
     void dispatch_set_receive_directory_request(QLocalSocket* socket, const protocol::Frame& frame);
     void dispatch_get_transfer_status_request(QLocalSocket* socket, const protocol::Frame& frame);
+    void dispatch_send_file_request(QLocalSocket* socket, const protocol::Frame& frame);
     void send_frame(QLocalSocket* socket, protocol::Frame frame);
     void send_error(QLocalSocket* socket, protocol::MessageType type, RequestId request_id, const Error& error);
     void close_protocol_error(QLocalSocket* socket, const Error& error);

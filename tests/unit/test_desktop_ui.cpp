@@ -8,6 +8,8 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QTimer>
+#include <QTemporaryDir>
+#include <QFile>
 
 #include <functional>
 #include <vector>
@@ -79,6 +81,20 @@ Frame transfer_error_frame(MessageType type, coredesk::RequestId request_id, cor
         coredesk::protocol::ErrorResponsePayload{false, code, std::move(message)});
     EXPECT_TRUE(encoded.ok());
     return Frame{type, 0, request_id, std::move(encoded).value()};
+}
+
+Frame send_accepted_frame(coredesk::RequestId request_id)
+{
+    auto encoded = coredesk::protocol::encode_send_file_accepted_payload({true});
+    EXPECT_TRUE(encoded.ok());
+    return Frame{MessageType::SendFileAccepted, 0, request_id, std::move(encoded).value()};
+}
+
+Frame send_result_frame(coredesk::RequestId request_id, bool success, coredesk::ErrorCode code, std::string message)
+{
+    auto encoded = coredesk::protocol::encode_send_file_result_payload({success, code, std::move(message)});
+    EXPECT_TRUE(encoded.ok());
+    return Frame{MessageType::SendFileResult, 0, request_id, std::move(encoded).value()};
 }
 
 } // namespace
@@ -209,6 +225,71 @@ TEST(TransferWidgetTest, ErrorLabelDisplaysServiceError)
     TransferWidget widget;
     widget.show_error(QStringLiteral("permission denied"));
     EXPECT_EQ(widget.error_text(), QStringLiteral("permission denied"));
+}
+
+TEST(TransferWidgetTest, ValidSendInputsEmitTypedRequestAndDisableSend)
+{
+    app();
+    QTemporaryDir temp;
+    ASSERT_TRUE(temp.isValid());
+    const auto file_path = temp.filePath(QStringLiteral("send.bin"));
+    QFile file(file_path);
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    file.write("payload");
+    file.close();
+
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{false, 0, "C:/receive", 0});
+    QString requested_file;
+    QString requested_host;
+    std::uint16_t requested_port = 0;
+    widget.set_send_file_requested_callback(
+        [&](const QString& path, const QString& host, std::uint16_t port) {
+            requested_file = path;
+            requested_host = host;
+            requested_port = port;
+        });
+    widget.set_send_inputs(file_path, QStringLiteral("127.0.0.1"), QStringLiteral("45827"));
+    widget.request_send_for_testing();
+
+    EXPECT_EQ(requested_file, file_path);
+    EXPECT_EQ(requested_host, QStringLiteral("127.0.0.1"));
+    EXPECT_EQ(requested_port, 45827U);
+    EXPECT_FALSE(widget.send_button_enabled());
+    EXPECT_EQ(widget.send_status_text(), QStringLiteral("Sending..."));
+}
+
+TEST(TransferWidgetTest, InvalidSendInputsShowErrorWithoutRequest)
+{
+    app();
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{false, 0, "C:/receive", 0});
+    int requests = 0;
+    widget.set_send_file_requested_callback([&](const QString&, const QString&, std::uint16_t) {
+        ++requests;
+    });
+    widget.set_send_inputs(QStringLiteral("missing.file"), QString{}, QStringLiteral("70000"));
+    widget.request_send_for_testing();
+
+    EXPECT_EQ(requests, 0);
+    EXPECT_TRUE(widget.send_status_text().startsWith(QStringLiteral("Error:")));
+    EXPECT_TRUE(widget.send_button_enabled());
+}
+
+TEST(TransferWidgetTest, SendTerminalStatesRestoreButton)
+{
+    app();
+    TransferWidget widget;
+    widget.set_transfer_status(GetTransferStatusResponsePayload{true, 45827, "C:/receive", 0});
+    widget.set_sending(true);
+    EXPECT_FALSE(widget.send_button_enabled());
+    widget.show_send_success();
+    EXPECT_TRUE(widget.send_button_enabled());
+    EXPECT_EQ(widget.send_status_text(), QStringLiteral("Sent"));
+    widget.set_sending(true);
+    widget.show_send_failure(QStringLiteral("connection refused"));
+    EXPECT_TRUE(widget.send_button_enabled());
+    EXPECT_TRUE(widget.send_status_text().contains(QStringLiteral("connection refused")));
 }
 
 TEST(MainWindowTest, StaleSearchResponseDoesNotOverwriteNewerQuery)
@@ -383,4 +464,51 @@ TEST(MainWindowTest, DisconnectInvalidatesPendingTransferStatusResponse)
     window.handle_frame(transfer_status_frame(55, GetTransferStatusResponsePayload{true, 45827, "C:/receive", 1}));
 
     EXPECT_EQ(window.transfer_widget()->status_text(), QStringLiteral("Offline"));
+}
+
+TEST(MainWindowTest, SendFileResponsesRequireMatchingRequestId)
+{
+    app();
+    MainWindow window(false);
+    window.handle_connected();
+    window.set_pending_transfer_request_id_for_testing(MessageType::SendFileAccepted, 70);
+
+    window.handle_frame(send_accepted_frame(69));
+    EXPECT_NE(window.transfer_widget()->send_status_text(), QStringLiteral("Sending..."));
+    window.handle_frame(send_accepted_frame(70));
+    EXPECT_EQ(window.transfer_widget()->send_status_text(), QStringLiteral("Sending..."));
+    window.handle_frame(send_result_frame(69, true, coredesk::ErrorCode::Ok, {}));
+    EXPECT_EQ(window.transfer_widget()->send_status_text(), QStringLiteral("Sending..."));
+    window.handle_frame(send_result_frame(70, true, coredesk::ErrorCode::Ok, {}));
+    EXPECT_EQ(window.transfer_widget()->send_status_text(), QStringLiteral("Sent"));
+}
+
+TEST(MainWindowTest, SendFileFailureRestoresUiOnce)
+{
+    app();
+    MainWindow window(false);
+    window.handle_connected();
+    window.transfer_widget()->set_transfer_status(GetTransferStatusResponsePayload{false, 0, "C:/receive", 0});
+    window.set_pending_transfer_request_id_for_testing(MessageType::SendFileResult, 80);
+    window.handle_frame(send_result_frame(80, false, coredesk::ErrorCode::TargetExists, "target exists"));
+    EXPECT_TRUE(window.transfer_widget()->send_button_enabled());
+    EXPECT_TRUE(window.transfer_widget()->send_status_text().contains(QStringLiteral("target exists")));
+
+    window.handle_frame(send_result_frame(80, true, coredesk::ErrorCode::Ok, {}));
+    EXPECT_TRUE(window.transfer_widget()->send_status_text().contains(QStringLiteral("target exists")));
+}
+
+TEST(MainWindowTest, DisconnectDuringSendShowsTerminalError)
+{
+    app();
+    MainWindow window(false);
+    window.set_pending_transfer_request_id_for_testing(MessageType::SendFileAccepted, 901);
+    window.transfer_widget()->set_sending(true);
+
+    window.handle_disconnected();
+
+    EXPECT_EQ(window.connection_state(), MainWindow::ConnectionState::Offline);
+    EXPECT_FALSE(window.transfer_widget()->send_button_enabled());
+    EXPECT_TRUE(window.transfer_widget()->send_status_text().contains(QStringLiteral("disconnected"),
+                                                                      Qt::CaseInsensitive));
 }

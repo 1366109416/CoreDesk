@@ -1,11 +1,87 @@
 # CoreDesk Implementation Status
 
 ## Current Milestone
-M7 - Transfer Management (DONE)
+M8 - Cross-platform Support + Portfolio/Interview Packaging (IN PROGRESS)
+
+M8-C - Portfolio / Presentation Closure (CLOSED)
+
+- Documentation implementation: COMPLETE.
+- Manual portfolio demo rehearsal: PASS.
+- Remote presentation verification: PASS.
+- M8-D: NOT STARTED.
+
+M8-B - Cross-platform / Build Closure (CLOSED)
+
+M8-A - v1.0 Outgoing Transfer Gap Closure (CLOSED)
 
 Pre-M8 Stability Corrective Pass (DONE)
 
 ## Completed
+- Completed the prepared M8-C portfolio demo rehearsal using the verified
+  Windows full-application build:
+  - The prepared 1–2 minute scan/search and loopback-transfer walkthrough was
+    rehearsed successfully in an observed 48 seconds. This is one manual GUI
+    operation duration, not a benchmark, guarantee, or performance SLA.
+  - Scan: PASS.
+  - Search: PASS. The keyword `alpha` displayed the expected
+    `coredesk_alpha_report.txt` result.
+  - LAN receiver: PASS. It reached `Enabled` on the observed port `45827`.
+  - Outgoing transfer: PASS to `127.0.0.1:45827`; the terminal UI state was
+    `Sent`, the destination file existed, and source/destination SHA-256
+    matched.
+  - Optional TargetExists retry: PASS. It was not part of the timed main flow.
+  - Timed-rehearsal errors or corrective actions: NONE.
+  - `127.0.0.1` was used as a deterministic single-machine demonstration of
+    the real TCP transfer path; this does not verify two-machine LAN
+    interoperability.
+- Completed M8-C remote presentation verification on the pushed GitHub branch:
+  - README landing-page rendering and documentation navigation: PASS.
+  - `docs/ARCHITECTURE.md` rendering: PASS; all 4 architecture Mermaid diagrams
+    rendered successfully.
+  - `docs/PROTOCOL.md` rendering: PASS; both protocol Mermaid diagrams rendered
+    successfully.
+  - `docs/DEMO.md` and links to `docs/BUILD.md`, `docs/PERFORMANCE.md`,
+    `docs/BUG_POSTMORTEM.md`, and `IMPLEMENTATION_STATUS.md`: PASS.
+  - Total Mermaid rendering: 6/6 PASS; no syntax or obvious remote display
+    error was observed.
+- M8-C documentation implementation, manual rehearsal, and remote presentation
+  verification are complete. No automated test, sanitizer, or benchmark was
+  rerun for this documentation/status-only closure; automated revalidation is
+  not required.
+- Completed M8-B build and platform documentation in `docs/BUILD.md`:
+  - documented the four Windows UI/network feature combinations;
+  - documented reproducible Windows full, Linux Core-only, and Linux ASan
+    configure/build/test commands;
+  - recorded the verified Windows full and Linux Core/ASan evidence boundaries;
+  - recorded Linux Qt Desktop, Local IPC/service, and TCP paths as not verified,
+    not unsupported;
+  - confirmed that normative v1.0 does not require installing Linux Qt when the
+    complete second-platform environment is unavailable.
+- Implemented the M8-A single-file outgoing path from Desktop through Local IPC
+  and the service-owned `TransferManager` to the existing bounded-memory
+  `TcpTransferClient`.
+- Added correlated Local IPC `SendFileRequest`, `SendFileAccepted`, and
+  `SendFileResult` messages without changing the TCP transfer protocol.
+- Added minimal Desktop file/host/port controls and Ready, Sending, Sent, and
+  Error states; progress, cancellation, queuing, and transfer history remain
+  intentionally out of scope.
+- Added automated protocol, payload, Local IPC, TransferManager, Desktop, and
+  end-to-end loopback coverage, including multi-chunk SHA verification, Busy,
+  connection failure recovery, TargetExists recovery, and repeat sends.
+- Completed the Windows Desktop manual outgoing-transfer smoke against
+  `127.0.0.1:45827`:
+  - Normal localhost send passed from
+    `D:\Temp\CoreDeskSmoke\send\smoke-1.txt` to
+    `D:\Temp\CoreDeskSmoke\receive\smoke-1.txt`; source and received SHA-256
+    both equal `F66BF0D9CC00521B787046873C5A29F3831818F4EC5E525CDBDCE87CACCBAFC0`.
+  - Re-sending `smoke-1.txt` passed the TargetExists check and displayed
+    `target file already exists`.
+  - Sending to port `45828` passed the failure-path check and displayed
+    `Connection refused`; the application did not crash or hang and the send UI
+    remained usable.
+  - Retrying on `127.0.0.1:45827` passed for `smoke-2.txt`; source and received
+    SHA-256 both equal
+    `CBB94D493FC2591BA7BDC3E2C3CD8D54CD978F14AD37FCAC9383875519565BD6`.
 - Preserved M0-M6 behavior, including CLI, scanner/index/search tests, FrameProtocol tests, Service + Local IPC integration tests, Qt Desktop UI tests, and TCP loopback transfer tests.
 - Reused the existing M3 `FrameProtocol` for all Local IPC transfer-management messages and TCP LAN transfer messages.
 - Implemented M6 TCP LAN transfer:
@@ -157,9 +233,9 @@ Pre-M8 Stability Corrective Pass (DONE)
   - Local IPC disconnect invalidates pending transfer status response.
 
 ## Known Issues
-- `TcpTransferClient::send_file()` starts an async hash worker before the real `FileOffer` request is sent. It returns success with a sentinel request id rather than the final `FileOffer` request id. Callback-based transfer completion works, but future Desktop send workflow may need clearer request-id semantics.
+- `TcpTransferClient::send_file()` starts an async hash worker before the real `FileOffer` request is sent. M8-A keeps Desktop correlation at the Local IPC `request_id` boundary and uses callbacks for TCP completion; the internal `FileOffer` id is not exposed to Desktop.
 - The default receive directory remains `temp/CoreDeskReceived` until the user changes it through the M7 Desktop control.
-- Desktop transfer sending workflow is not implemented in this M7 step. There is no Send File button, peer list, device discovery, transfer progress UI, transfer history, or persistent settings.
+- M8-A provides one explicit file and one manually entered host/port per send. Peer lists, discovery, outgoing progress/cancel, transfer history, queuing, and persistent target settings are not implemented.
 - Qt runtime tests require `D:\Qt\6.11.2\msvc2022_64\bin` on the current process `PATH`, so that Qt Debug DLLs can be found. Qt DLLs were not copied into the project or system directories.
 - Fresh FetchContent downloads from GitHub may fail in the current environment due TLS credential/network reset errors. Reusing the existing local FetchContent source cache allowed configure/build/test verification to complete.
 - The M3 non-blocking performance note remains: `FrameDecoder::push()` uses `vector::erase(begin, ...)`, which can add data movement for many tiny frames.
@@ -203,8 +279,8 @@ Status: DONE
 
 ### Latest Windows regression
 
-- Debug build with `COREDESK_BUILD_NETWORK=ON`, `COREDESK_BUILD_UI=OFF`, and tests enabled: PASS.
-- CTest: 128 total, 126 passed, 0 failed, 2 skipped.
+- Debug build with `COREDESK_BUILD_NETWORK=ON`, `COREDESK_BUILD_UI=ON`, and tests enabled: PASS.
+- CTest: 132 total, 130 passed, 0 failed, 2 skipped.
 - Skips remain the two Windows directory-symlink environment cases closed by Linux coverage.
 
 ## Corrective Known Finding
@@ -215,10 +291,10 @@ Status: DONE
 
 - Logger file rotation/retention is not implemented.
 - Outgoing transfer progress, cancel, and timeout behavior remain deferred.
-- Desktop Send File and outgoing-transfer Local IPC remain deferred product features.
+- Outgoing transfer history, queuing, peer discovery, and persistent target settings remain deferred product features.
 - Receiver QFile write and incremental hash remain on the Qt event thread; workerization is deferred unless future isolated evidence justifies it.
 - `FrameDecoder::push()` front erase may be optimized if many-tiny-frame profiling justifies the change.
-- Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification remain for the formal cross-platform milestone.
+- Linux Qt Desktop, Qt Local IPC runtime, and Qt TCP adapter verification are not required for the current v1.0 closure and remain deferred/not verified.
 - TSan was not run; normative M7 does not require it as a mandatory DoD item.
 
 ## Corrective Evidence Documents
@@ -256,4 +332,4 @@ Status: DONE
 - None for implemented M7 transfer-management behavior.
 
 ## Next Milestone
-M8 - Cross-platform Support + Portfolio/Interview Packaging (NOT STARTED)
+M8-D (NOT STARTED). M8 remains in progress and v1.0 is not yet complete.

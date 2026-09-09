@@ -1,91 +1,149 @@
 # CoreDesk
 
-CoreDesk is a C++20 desktop file indexing and LAN transfer client. The
-normative implementation specification lives in `docs/COREDESK_SPEC.md`.
+CoreDesk is a C++20 desktop file indexer that pairs a thin Qt client with a
+local service for responsive search and verified single-file transfers across
+a trusted LAN.
 
-The current corrective stability pass includes bounded-memory TCP sending,
-checked partial socket writes, connection-local receive isolation, a
-thread-safe file logger, real Windows benchmarks, and Linux Core/ASan evidence.
-Formal M8 packaging has not started.
+## Highlights
 
-## Verified stability and performance
+- **Process separation:** the Qt Desktop handles interaction and presentation;
+  a long-lived local Service owns scanning, indexes, and transfers.
+- **Correlated IPC:** Desktop and Service communicate through a framed
+  `QLocalSocket` / `QLocalServer` protocol with explicit request correlation.
+- **Responsive indexed search:** scans build a replacement index snapshot while
+  the current snapshot remains available for search.
+- **Bounded execution and transfer:** scanning uses bounded worker execution;
+  TCP sending uses chunked reads, backpressure, and bounded application queues.
+- **Integrity and failure handling:** received files use temporary targets,
+  SHA-256 verification, structured errors, and terminal-state recovery.
+- **Evidence over claims:** the repository includes documented build
+  instructions, real benchmarks, Windows and Linux Core test results,
+  sanitizer evidence, and a pre-merge bug postmortem.
 
-Representative Release measurements on an Intel Core i9-14900HX Windows 11
-machine are shown below. They describe this machine and corrective working
-tree, not universal performance guarantees.
+## Core Features
 
-| Area | Representative result |
+- Recursively scan a user-selected directory and build a filename/path index.
+- Search from the Desktop while the Service owns the active index lifecycle.
+- Enable or disable a LAN receiver and select its destination directory.
+- Send one regular file to a manually entered host and port through the
+  Desktop-to-Service IPC path.
+- Reject existing targets, validate the completed byte count and SHA-256, and
+  report a clear terminal success or error to the Desktop.
+
+## Architecture
+
+The Desktop is intentionally thin: it owns widgets, user input, status display,
+service startup, and the Local IPC client. The Service owns scan/index state,
+the Local IPC server, and both receiving and outgoing TCP transfer lifecycles.
+The Desktop does not perform direct TCP file transfer.
+
+```text
+Qt Desktop -> Local IPC -> Local Service
+                              |-> Core scan, index, and search
+                              `-> TransferManager -> Qt TCP receiver/sender
+```
+
+Pure C++ Core targets can be built and tested without Qt when both UI and
+network features are disabled. See
+[Architecture](docs/ARCHITECTURE.md) for the component model, thread model,
+ownership boundaries, and scan/search and transfer flows.
+
+## Performance
+
+Representative Release measurements from the documented Windows 11 system are
+summarized below. They characterize that environment and are not throughput or
+latency guarantees.
+
+| Area | Recorded evidence |
 |---|---|
-| Search | 100,000 records: linear median 1,159 us; indexed median 2 us; cached median approximately 200 ns |
-| Scan | 10,000 files + 100 directories: median 192/131/84/64 ms with 1/2/4/8 workers |
-| Transfer | 100 MiB original three-run median: 51.4403 MiB/s; SHA-256 matched |
-| Large transfer | 1 GiB loopback observed both 53.384 MiB/s and 13.863-14.1097 MiB/s modes; SHA-256 matched |
+| Search | 100,000 records, 100,006 tokens, and 603,900 postings: linear median 1,159 us, indexed median 2 us, cached median about 200 ns |
+| Scan | 10,000 files plus 100 directories: 192 / 131 / 84 / 64 ms median with 1 / 2 / 4 / 8 workers |
+| Transfer | 100 MiB three-run median: 51.4403 MiB/s with matching SHA-256 |
+| Sender buffering | 256 KiB chunks, 2 MiB Qt write high-water, and 2,097,696 bytes maximum observed combined application-level pending data; no whole-file buffering |
 
-The 1 GiB variation is a known, non-correctness performance finding. Its root
-cause has not been isolated, and the slower runs are intentionally retained.
-The sender uses 256 KiB chunks and a 2 MiB high-water mark; measured maximum
-Qt pending plus application remainder was 2,097,696 bytes, with no whole-file
-buffering.
+The 1 GiB loopback benchmark showed two observed modes: 53.384 MiB/s and
+13.863–14.1097 MiB/s. Every completed run matched SHA-256, but the cause of the
+run-to-run performance variability has not been identified. The buffering
+figures above do not include operating-system kernel socket memory. See the
+[Performance Report](docs/PERFORMANCE.md) for methodology, complete results,
+limitations, and responsiveness measurements.
 
-Full methodology, raw-run summaries, event-loop percentile terminology,
-limitations, and Linux sanitizer evidence are in
-[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md). The real scan-worker exception
-case study is in [`docs/BUG_POSTMORTEM.md`](docs/BUG_POSTMORTEM.md).
+## Reliability and Testing
 
-## Linux verification scope
+| Validation | Result |
+|---|---|
+| Windows full configuration | 132 total, 130 passed, 0 failed, 2 skipped |
+| Linux Core regression after outgoing-transfer work | 130 / 130 passed |
+| Earlier Linux Core ASan/LSan run | 127 / 127 passed; no sanitizer or leak report |
 
-Linux verification currently covers **Core + tests**, not the full Qt
-application:
+The two Windows skips require directory-symlink creation that was unavailable
+in that test environment. Both tests executed and passed in the Linux normal
+and ASan runs; they are not known product failures.
 
-- Ubuntu 24.04.3 LTS / GCC 13.3 normal: 127/127 passed.
-- Ubuntu 24.04.3 LTS / GCC 13.3 ASan: 127/127 passed, no sanitizer report.
-- Both directory-symlink tests skipped by the Windows environment executed and
-  passed in Linux normal and ASan builds.
+The repository also retains a
+[pre-merge bug postmortem](docs/BUG_POSTMORTEM.md) for a progress-callback
+exception that could cross a `std::thread` entry boundary, including the fix
+and regression coverage.
 
-Linux Qt Desktop, Qt Local IPC service execution, and Qt TCP adapters have not
-yet been verified.
+## Build and Run
 
-## Logging
+The full application is verified on Windows 11 with Visual Studio 2022 and Qt
+6.11.2. The Core-only configuration does not require Qt. See the
+[Build and Platform Verification Guide](docs/BUILD.md) for dependencies,
+copyable commands, feature combinations, and tested boundaries.
 
-The service writes to
-`QStandardPaths::AppLocalDataLocation/logs/coredesk_service.log` by default.
-Set `COREDESK_LOG_FILE` to override the destination, for example to a path on
-`D:` when the system drive is constrained:
+For a minimal Core-only test run from the repository root on Linux with the
+documented compiler, CMake, Ninja, and dependency prerequisites installed:
 
-```powershell
-$env:COREDESK_LOG_FILE = "D:\CoreDeskLogs\coredesk_service.log"
+```bash
+cmake -S . -B build-core -G Ninja -DCOREDESK_BUILD_UI=OFF -DCOREDESK_BUILD_NETWORK=OFF -DCOREDESK_BUILD_TESTS=ON
+cmake --build build-core --parallel
+ctest --test-dir build-core --output-on-failure
 ```
 
-The override is not a hard-coded product default. Log rotation is not
-implemented in v1.0.
+For a short scan/search and loopback file-transfer walkthrough, use the
+[1–2 minute Demo Guide](docs/DEMO.md).
 
-## Security boundary and non-goals
+## Platform Verification
 
-CoreDesk v1.0 is intended for a trusted LAN demonstration. It does not provide
-TLS, authentication, automatic device discovery, cloud accounts, P2P
-traversal, database persistence, directory synchronization, or conflict
-resolution. It does not index file contents. Transfer input still uses framed
-schema validation, basename/path-traversal checks, `.part` files, target-exists
-rejection, and SHA-256 verification.
+| Scope | Status |
+|---|---|
+| Windows full application | **VERIFIED** |
+| Linux Core + tests | **VERIFIED** |
+| Linux Core ASan/LSan | **VERIFIED** |
+| Linux Qt Desktop | **NOT VERIFIED** |
+| Linux Qt Local IPC/service | **NOT VERIFIED** |
+| Linux Qt TCP | **NOT VERIFIED** |
 
-## Build
+Linux Qt application and network verification remains deferred; `NOT VERIFIED`
+does not mean that those paths are declared unsupported. Exact toolchains and
+commands are recorded in the [Build Guide](docs/BUILD.md).
 
-```powershell
-cmake -S . -B build -DCOREDESK_BUILD_TESTS=ON
-cmake --build build --config Debug
-ctest --test-dir build -C Debug --output-on-failure
-.\build\Debug\coredesk_cli.exe --version
-```
+## Security Boundary and Non-goals
 
-The pure C++ Core and its tests can be verified without Qt by disabling both
-the UI and network adapters:
+The current networking scope assumes a trusted LAN and must not be exposed as
+an authenticated public file-sharing service. CoreDesk v1.0 does not provide:
 
-```powershell
-cmake -S . -B build-m0-verify -G Ninja -DCOREDESK_BUILD_TESTS=ON -DCOREDESK_BUILD_UI=OFF -DCOREDESK_BUILD_NETWORK=OFF
-cmake --build build-m0-verify
-ctest --test-dir build-m0-verify --output-on-failure
-.\build-m0-verify\coredesk_cli.exe --version
-```
+- TLS or peer authentication;
+- automatic peer discovery;
+- transfer resume or transfer history;
+- cloud synchronization; or
+- an installer/package workflow.
 
-This Core-only configuration does not build or verify the Qt Desktop, Local
-IPC service executable, or Qt TCP adapter.
+Targets are entered manually, and the index covers filenames and paths rather
+than file contents.
+
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — components, threads, ownership, and
+  data flows
+- [Build and Platform Verification](docs/BUILD.md) — dependencies, commands,
+  feature matrix, and validation scope
+- [Protocol](docs/PROTOCOL.md) — framing, payloads, Local IPC, and TCP transfer
+- [Performance](docs/PERFORMANCE.md) — benchmark methodology, results, and
+  limitations
+- [Demo](docs/DEMO.md) — short reproducible scan/search and transfer walkthrough
+- [Bug Postmortem](docs/BUG_POSTMORTEM.md) — pre-merge failure analysis and
+  regression coverage
+- [Implementation Status](IMPLEMENTATION_STATUS.md) — milestone and engineering
+  history

@@ -269,6 +269,10 @@ void LocalIpcServer::dispatch_frame(QLocalSocket* socket, const protocol::Frame&
         dispatch_get_transfer_status_request(socket, frame);
         return;
 
+    case protocol::MessageType::SendFileRequest:
+        dispatch_send_file_request(socket, frame);
+        return;
+
     default:
         send_error(socket, frame.type, frame.request_id, invalid_request("message type is not supported"));
         return;
@@ -440,6 +444,75 @@ void LocalIpcServer::dispatch_get_transfer_status_request(QLocalSocket* socket, 
                                0,
                                frame.request_id,
                                std::move(encoded).value()});
+}
+
+void LocalIpcServer::dispatch_send_file_request(QLocalSocket* socket, const protocol::Frame& frame)
+{
+    auto payload = protocol::decode_send_file_request_payload(frame.payload);
+    if (!payload.ok()) {
+        send_error(socket, protocol::MessageType::SendFileAccepted, frame.request_id, payload.error());
+        return;
+    }
+    if (!transfer_handlers_.send_file) {
+        send_error(socket, protocol::MessageType::SendFileAccepted, frame.request_id, transfer_unavailable());
+        return;
+    }
+
+    QPointer<QLocalSocket> requester(socket);
+    QPointer<LocalIpcServer> server_guard(this);
+    const auto request_id = frame.request_id;
+    auto started = transfer_handlers_.send_file(
+        payload.value(),
+        [server_guard, requester, request_id](Result<void> result) mutable {
+            if (!server_guard) {
+                return;
+            }
+            QMetaObject::invokeMethod(server_guard, [server_guard, requester, request_id, result = std::move(result)]() mutable {
+                if (!server_guard || !requester || !server_guard->connections_.contains(requester)) {
+                    return;
+                }
+                protocol::SendFileResultPayload response;
+                response.success = result.ok();
+                response.code = result.ok() ? ErrorCode::Ok : result.error().code;
+                response.message = result.ok() ? std::string{} : result.error().message;
+                auto encoded = protocol::encode_send_file_result_payload(response);
+                if (!encoded.ok()) {
+                    server_guard->send_error(requester, protocol::MessageType::SendFileResult, request_id, encoded.error());
+                    return;
+                }
+                server_guard->send_frame(requester,
+                                         protocol::Frame{protocol::MessageType::SendFileResult,
+                                                         0,
+                                                         request_id,
+                                                         std::move(encoded).value()});
+            }, Qt::QueuedConnection);
+        });
+    if (!started.ok()) {
+        if (logger_) {
+            logger_->log(LogLevel::Warning,
+                         "network",
+                         "outgoing request rejected request_id=" + std::to_string(request_id) +
+                             " error_code=" + std::string(to_string(started.error().code)));
+        }
+        send_error(socket, protocol::MessageType::SendFileAccepted, request_id, started.error());
+        return;
+    }
+
+    auto accepted = protocol::encode_send_file_accepted_payload({true});
+    if (!accepted.ok()) {
+        send_error(socket, protocol::MessageType::SendFileAccepted, request_id, accepted.error());
+        return;
+    }
+    if (logger_) {
+        logger_->log(LogLevel::Info,
+                     "network",
+                     "outgoing request accepted request_id=" + std::to_string(request_id));
+    }
+    send_frame(socket,
+               protocol::Frame{protocol::MessageType::SendFileAccepted,
+                               0,
+                               request_id,
+                               std::move(accepted).value()});
 }
 
 void LocalIpcServer::send_frame(QLocalSocket* socket, protocol::Frame frame)

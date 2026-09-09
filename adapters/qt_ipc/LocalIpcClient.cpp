@@ -211,6 +211,20 @@ RequestId LocalIpcClient::send_get_transfer_status_request(const protocol::GetTr
     return request_id;
 }
 
+RequestId LocalIpcClient::send_file_request(const protocol::SendFileRequestPayload& payload)
+{
+    const auto request_id = next_request_id();
+    auto encoded = protocol::encode_send_file_request_payload(payload);
+    if (!encoded.ok()) {
+        if (error_callback_) {
+            error_callback_(encoded.error());
+        }
+        return request_id;
+    }
+    send_frame(protocol::Frame{protocol::MessageType::SendFileRequest, 0, request_id, std::move(encoded).value()});
+    return request_id;
+}
+
 Result<void> LocalIpcClient::send_frame(protocol::Frame frame)
 {
     auto encoded = protocol::FrameEncoder::encode(frame);

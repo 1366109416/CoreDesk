@@ -141,6 +141,11 @@ void TcpTransferClient::set_error_callback(ErrorCallback callback)
     error_callback_ = std::move(callback);
 }
 
+void TcpTransferClient::set_disconnected_callback(DisconnectedCallback callback)
+{
+    disconnected_callback_ = std::move(callback);
+}
+
 void TcpTransferClient::set_logger(Logger* logger) noexcept
 {
     logger_ = logger;
@@ -287,6 +292,9 @@ void TcpTransferClient::handle_disconnected()
     remainder_flush_scheduled_ = false;
     cleanup_transfer_file();
     decoder_.reset();
+    if (disconnected_callback_) {
+        disconnected_callback_();
+    }
 }
 
 void TcpTransferClient::handle_error(const QString& message)

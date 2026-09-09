@@ -51,6 +51,9 @@ Message type values are fixed wire values and must not be renumbered.
 45   SetReceiveDirectoryResponse
 46   GetTransferStatusRequest
 47   GetTransferStatusResponse
+48   SendFileRequest
+49   SendFileAccepted
+50   SendFileResult
 100  Hello
 101  HelloAck
 110  FileOffer
@@ -63,6 +66,68 @@ Message type values are fixed wire values and must not be renumbered.
 
 Unknown message type values are protocol errors. The decoder validates the
 numeric value before accepting a frame.
+
+## Protocol Flows
+
+Local IPC is the Desktop-to-Service control plane. The outgoing-file messages
+use the frame `request_id` to correlate one Desktop request with its acceptance
+and terminal result. `SendFileAccepted` means only that the Service accepted
+ownership of the operation; it does not mean that the file arrived.
+
+```mermaid
+sequenceDiagram
+    participant D as Desktop
+    participant C as LocalIpcClient
+    participant S as LocalIpcServer
+    participant M as TransferManager
+
+    D->>C: Send file
+    C->>S: SendFileRequest 48 with request_id R
+    S->>M: Validate and start outgoing
+    alt Request rejected
+        M-->>S: Structured error
+        S-->>C: SendFileAccepted 49 error with request_id R
+        C-->>D: Show error
+    else Request accepted
+        M-->>S: Accepted
+        S-->>C: SendFileAccepted 49 with request_id R
+        C-->>D: Keep Sending state
+        M-->>S: Terminal completion
+        S-->>C: SendFileResult 50 with request_id R
+        C-->>D: Show Sent or Error
+    end
+```
+
+TCP is a separate Service-to-Service transfer protocol. Its `100+` message
+types are not Local IPC commands. Request IDs correlate replies to the
+handshake, offer, and finish frames; `transfer_id` identifies the offered file
+through accept/reject, chunks, finish, and final result.
+
+```mermaid
+sequenceDiagram
+    participant C as TcpTransferClient
+    participant S as TcpTransferServer
+
+    C->>S: Hello 100
+    S-->>C: HelloAck 101
+    C->>S: FileOffer 110 with transfer_id T
+    alt Target exists or offer rejected
+        S-->>C: FileReject 112 with transfer_id T
+    else Offer accepted
+        S-->>C: FileAccept 111 with transfer_id T and offset 0
+        loop File data
+            C->>S: FileChunk 113 with transfer_id T and offset
+        end
+        C->>S: FileFinish 114 with transfer_id T
+        S->>S: Verify size and SHA-256, then rename part file
+        S-->>C: FileResult 115 with transfer_id T
+    end
+```
+
+`FileReject` is terminal for the offered transfer. After an accepted offer,
+`FileResult` is the terminal success or failure response; the receiver only
+reports success after the byte count and SHA-256 match and the `.part` file is
+renamed to the final target. `TargetExists` is an offer-rejection case.
 
 ## Streaming Rules
 
@@ -178,6 +243,62 @@ by the service transfer manager.
   "active_transfers": 0
 }
 ```
+
+### Local IPC Outgoing File Transfer
+
+M8-A adds a single-file outgoing request from Desktop to Service. These are
+Local IPC management messages only; the existing TCP transfer messages and
+their wire values are unchanged.
+
+`SendFileRequest`:
+
+```json
+{
+  "file_path": "D:/files/report.pdf",
+  "host": "192.0.2.10",
+  "port": 45827
+}
+```
+
+`file_path` and `host` must be non-empty strings, and `port` must be in the
+range 1 through 65535. The service additionally verifies that `file_path`
+exists, is a regular file, and is readable. Only one outgoing transfer is
+accepted at a time.
+
+`SendFileAccepted`:
+
+```json
+{
+  "accepted": true
+}
+```
+
+An invalid or busy request returns the standard error-response payload using
+message type `SendFileAccepted`. A successfully accepted request later produces
+exactly one terminal `SendFileResult` with the same frame `request_id`.
+
+`SendFileResult` success:
+
+```json
+{
+  "success": true,
+  "code": "OK",
+  "message": ""
+}
+```
+
+`SendFileResult` failure:
+
+```json
+{
+  "success": false,
+  "code": "TARGET_EXISTS",
+  "message": "target file already exists"
+}
+```
+
+The Desktop correlates both accepted and terminal responses by `request_id`.
+No progress or cancellation event is defined for M8-A.
 
 `active_transfers` is the real count exposed by the current
 `TcpTransferServer` single-active-receive model: `0` when no receive is active,
